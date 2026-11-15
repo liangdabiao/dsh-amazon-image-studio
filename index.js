@@ -25,6 +25,7 @@ export const Config = Schema.object({
   imageTransparency: Schema.boolean().default(false).description('apiz 透明背景（输出 PNG；开启时 prompt 里不要描述背景，亚马逊主图请保持关闭）'),
   imageUseApizCliAuth: Schema.boolean().default(false).description('允许复用本机 apiz CLI 登录态（默认关：没显式配置 Key 时就不允许生图）'),
   requireReferenceImages: Schema.boolean().default(true).description('强制要求产品参考图（默认开：没有参考图不允许生图，避免商品不一致）'),
+  reusePanelReferences: Schema.boolean().default(true).description('对话里调用 amz_generate 且没显式传 referenceImages 时，自动复用面板最近上传的参考图（最多 4 张）'),
   imagePollSeconds: Schema.number().default(2).description('apiz 异步任务轮询间隔秒数（2 秒起，逐步退避到 5 秒）'),
   apizBin: Schema.string().default('').description('apiz CLI 路径（参考图上传用；留空走 PATH / APIZ_BIN）'),
   outputTier: Schema.string().default('2K').description('默认生图档位：1K / 2K / 4K（默认 2K；成本敏感可调 1K）'),

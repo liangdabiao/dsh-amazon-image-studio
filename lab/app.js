@@ -907,6 +907,10 @@ async function renderSettings() {
     <label class="row" style="gap:6px;margin-top:8px">
       <input type="checkbox" id="s-require-ref" ${s.requireReferenceImages ? 'checked' : ''}> 必须上传产品参考图才能生成（建议保持开启）
     </label>
+    <label class="row" style="gap:6px;margin-top:8px">
+      <input type="checkbox" id="s-reuse-ref" ${s.reusePanelReferences ? 'checked' : ''}> 对话里生图时自动复用面板最近上传的参考图
+      <span class="hint">（当前面板里有 ${s.panelReferenceCount} 张；关掉后对话里必须显式给路径）</span>
+    </label>
     <label class="field" style="margin-top:10px;width:180px">API 超时（秒）
       <input id="s-timeout" type="number" min="30" max="3600" value="${Number(s.timeoutSeconds)}">
     </label>
@@ -928,6 +932,7 @@ async function renderSettings() {
         imageTransparency: document.getElementById('s-transparency').checked,
         imageUseApizCliAuth: document.getElementById('s-cliauth').checked,
         requireReferenceImages: document.getElementById('s-require-ref').checked,
+        reusePanelReferences: document.getElementById('s-reuse-ref').checked,
         timeoutSeconds: Number(document.getElementById('s-timeout').value),
         imageModel: document.getElementById('s-model').value.trim(),
       }

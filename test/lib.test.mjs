@@ -48,6 +48,7 @@ const {
 const {
   savePlan, loadPlan, listPlans, removePlan, addHistoryRecord, readHistory,
   removeHistoryRecord, clearHistory, saveImage, fileExists, DATA_DIR,
+  saveReference, listReferences, removeReference,
 } = await import('../lib/data.js')
 const {
   verifySyntheticPerformerTag, tagSyntheticPerformerBytes, checkSyntheticPerformerBytes,
@@ -151,6 +152,12 @@ const REF_DIR = new URL('../.tmp/test-home/fixtures/', import.meta.url).pathname
 mkdirSync(REF_DIR, { recursive: true })
 const REF_PNG_PATH = join(REF_DIR, 'ref-fixture.png')
 writeFileSync(REF_PNG_PATH, Buffer.from(ONE_PX_PNG_BASE64, 'base64'))
+
+// 每次开跑先清掉上次残留的「面板参考图」，否则会被自动复用、污染无关用例
+{
+  const { listReferences: listRefs, removeReference: removeRef } = await import('../lib/data.js')
+  for (const item of listRefs()) removeRef(item.path)
+}
 
 /** 本地 mock JSON API 服务器 */
 async function withMockServer(handler, fn) {
@@ -563,6 +570,7 @@ await test('runGenerate + mock OpenAI 兼容 images/generations：落盘 + 历�
       outputTier: '2K',
       timeoutSeconds: 60,
       requireReferenceImages: false, // 这条用例验的是 OpenAI 适配器，不是参考图门槛
+      reusePanelReferences: false,   // 也別自动捡面板里的图，否则会走 multipart edits
     }
     assert.equal(imageConfigured(), true)
     const archive = runValidatePlan({ payload: makeListingPayload(7), mode: 'listing', listingImageCount: 7 })
@@ -877,6 +885,61 @@ await test('apiz：报错体 detail 直接冒到工具层 + 超过 1 张/遮罩�
     () => generateImage({ prompt: 'x', size: '2048x2048', n: 2 }, { provider: 'apiz', apiKey: 'sk', model: 'apiz/gpt-image-2.5-flare' }),
     /一次只出一张图/,
   )
+})
+
+await test('参考图来源：显式 > 面板最近上传 > 拒绝', async () => {
+  const clearRefs = () => { for (const item of listReferences()) removeReference(item.path) }
+  clearRefs()
+  try {
+
+  let mockBase = ''
+  await withMockServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      if (req.url === '/cdn/out.png') {
+        res.writeHead(200, { 'content-type': 'image/png' })
+        res.end(Buffer.from(ONE_PX_PNG_BASE64, 'base64'))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(req.url === '/api/v3/tasks/create'
+        ? { code: 200, data: { task_id: 'task_ref', price: 3 } }
+        : { code: 200, data: { status: 'completed', result: { images: [`${mockBase}/cdn/out.png`] } } }))
+    })
+  }, async (url) => {
+    mockBase = url
+    const baseConfig = {
+      imageProvider: 'apiz', imageApiUrl: url, imageApiKey: 'sk', imageQuality: 'low',
+      timeoutSeconds: 10, imagePollSeconds: 0.01,
+      imageUploader: async (_dataUrl, ctx) => `${url}/cdn/${ctx?.file ? 'ref' : 'x'}${Math.random().toString(36).slice(2, 6)}.png`,
+    }
+
+    // 面板里没图 + 不显式传 → 拒绝
+    configRef.config = { ...baseConfig }
+    await assert.rejects(() => runGenerate({ prompt: 'x', size: '1024x1024' }), /必须提供产品参考图/)
+
+    // 面板里有图 → 自动复用
+    saveReference(Buffer.from(ONE_PX_PNG_BASE64, 'base64'), 'png')
+    saveReference(Buffer.from('second-reference-bytes'), 'png')
+    const auto = await runGenerate({ prompt: 'x', size: '1024x1024' })
+    assert.equal(auto.record.referenceSource, 'panel')
+    assert.equal(auto.record.referenceCount, 2)
+    assert.ok(auto.warnings.some((w) => /自动复用了面板/.test(w)), `应有复用提醒：${JSON.stringify(auto.warnings)}`)
+
+    // 显式传 → 优先显式，不碰面板图
+    const explicit = await runGenerate({ prompt: 'x', size: '1024x1024', referenceImages: [REF_PNG_PATH] })
+    assert.equal(explicit.record.referenceSource, 'explicit')
+    assert.equal(explicit.record.referenceCount, 1)
+
+    // 关掉复用 → 面板有图也不再偷偷用
+    configRef.config = { ...baseConfig, reusePanelReferences: false }
+    await assert.rejects(() => runGenerate({ prompt: 'x', size: '1024x1024' }), /必须提供产品参考图/)
+
+    clearHistory()
+    })
+  } finally {
+    clearRefs()
+  }
 })
 
 // ---------------------------------------------------------------- 杂项
