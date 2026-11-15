@@ -7,6 +7,10 @@
 DeepSeek Harness（dsh）插件：**Amazon Listing / A+ 图片 AI 策划 + 逐张生图 + 合规打标**。把粘贴的 Listing 文案策划成 `MAIN + PT01-06`（7-12 张可调）Listing 图方案或四套 A+ 模块（普通/标准/高级/手机）逐张方案——每张含中文策划说明、英文生图 Prompt、负面词；再逐槽位组装最终 Prompt、挂风格板、一次一张生成；另附 AI 人物媒体 XMP 打标工具。侧栏「亚马逊图片」面板提供策划台 / 策划档案 / 生成历史 / AI 人物打标 / 设置 / 工作流指南。
 
 方法论与策划引擎移植自 [Ali-Aria/amazon-image-studio](https://github.com/Ali-Aria/amazon-image-studio)（MIT，上游基于 CookSleep/gpt_image_playground）。
+<img width="1866" height="1359" alt="image" src="https://github.com/user-attachments/assets/01c16f48-b63a-49e8-ae56-09e1387d1d78" />
+
+<img width="1845" height="1188" alt="image" src="https://github.com/user-attachments/assets/c7f6d3e4-9127-4a66-8b98-899b9e00773f" />
+
 
 **目录**：[它是怎么工作的](#它是怎么工作的先看这个) · [安装](#安装) · [能力清单](#装上以后有什么) · [使用](#使用) · [配置](#配置面板设置页--插件设置) · [开发](#开发) · [安全与隐私](#安全与隐私) · [许可与来源](#许可与来源)
 
@@ -128,7 +132,7 @@ apiz 只支持固定比例 × 1K/2K/4K，或一批离散宽高。插件会选"�
 **方式二（命令行）**：
 
 ```bash
-dsh plugin --profile <你的 profile> add file:/绝对路径/dsh-amazon-image-studio
+dsh plugin  --profile web   add  https://github.com/liangdabiao/dsh-amazon-image-studio 
 ```
 
 装好后侧栏会出现「亚马逊图片」入口，点进去先到**「设置」页填 apiz Key**（或勾选复用本机 `apiz auth login` 登录态），否则生图会被拒绝。
