@@ -1,0 +1,5 @@
+# 亚马逊图片工作台：策划引擎 + 生图工具 + 打标工具 + skill 快照（SKILL.md + 风格预设板）。
+# 浏览器半边由 dsh.client 声明加载（侧栏面板 + iframe 工作台）。
+- insert:
+    - id: amazon-image-studio
+      name: 'dsh-amazon-image-studio'

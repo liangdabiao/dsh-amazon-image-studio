@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- 亚马逊图片工作台徽标：相框 + 购物车弧线 -->
+  <rect x="2.5" y="4" width="19" height="14" rx="2"/>
+  <path d="M7 13.5l3-3 2.5 2.5L16 9.5l3 4"/>
+  <circle cx="9" cy="8.5" r="1.2"/>
+  <path d="M5 20.5c4.5 1.8 10.5 1.8 14.5-.4"/>
+  <path d="M19.5 20.1l-1.2-1.9 2.3-.4"/>
+</svg>
