@@ -1,9 +1,16 @@
 // dsh-amazon-image-studio 单测：node test/lib.test.mjs 直接跑（Windows 下不用 node --test）。
 // 数据目录指向工作区 .tmp/，不碰系统 Temp；mock 策划/生图 API 用本地 node:http 随机端口。
 process.env.DSH_HOME = new URL('../.tmp/test-home/', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+// ！单测必须断网外的一切兜底：apiz 适配器会复用「环境变量 / 本机 apiz CLI 登录态」的 Key，
+// 不隔离的话「未配置 Key」用例会真的打到 apiz 生产接口（曾因此触发一次真实计费校验）。
+process.env.APIZ_API_KEY = ''
+process.env.APIZ_CONFIG = new URL('../.tmp/no-such-apiz-config.toml', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+process.env.APIZ_BIN = new URL('../.tmp/no-such-apiz-bin', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 // ---------------------------------------------------------------- 手写 test 循环
 let passed = 0
@@ -35,7 +42,8 @@ const {
 const { STYLE_PRESETS, loadStylePresetDataUrl, getStylePaletteEntries, buildSelectedVisualStyle, getStylePresetById } = await import('../lib/style.js')
 const {
   configRef, TOOLS, buildAgentPlanningGuide, runValidatePlan, composeSlotPrompt, amzPlanTool,
-  amzSlotsTool, amzValidatePlanTool, amzHistoryTool, plannerConfigured, imageConfigured, runGenerate,
+  amzSlotsTool, amzValidatePlanTool, amzHistoryTool, plannerConfigured, imageConfigured, imageKeySource,
+  referenceImagesRequired, runGenerate,
 } = await import('../lib/tools.js')
 const {
   savePlan, loadPlan, listPlans, removePlan, addHistoryRecord, readHistory,
@@ -45,6 +53,13 @@ const {
   verifySyntheticPerformerTag, tagSyntheticPerformerBytes, checkSyntheticPerformerBytes,
 } = await import('../lib/tagger.js')
 const { generateImage } = await import('../lib/image/index.js')
+const { getApiErrorMessage } = await import('../lib/image/index.js')
+const {
+  resolveApizSize, snapToEnum, nearestAspectRatio, tierFromPixels,
+  normalizeApizQuality, clampApizPrompt, resolveApizReferenceUrls,
+  APIZ_ASPECT_RATIOS, APIZ_SIZE_TIERS, APIZ_WIDTHS, APIZ_HEIGHTS,
+} = await import('../lib/image/apiz.js')
+const { resolveApizApiKey, readApizCliApiKey } = await import('../lib/image/apizUpload.js')
 const { isOpenRouterBaseUrl, DEFAULT_IMAGES_MODEL } = await import('../lib/image/openai.js')
 const { normalizeAliyunQwenImageSize, createAliyunQwenImageEndpoint, isAliyunApiBaseUrl } = await import('../lib/image/aliyun.js')
 const { buildApiUrl, getDataUrlEncodedByteSize } = await import('../lib/image/shared.js')
@@ -130,6 +145,12 @@ function makePng() {
 
 const ONE_PX_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+
+// 参考图夹具：插件现在强制要有产品参考图，很多用例都需要一个真实存在的文件
+const REF_DIR = new URL('../.tmp/test-home/fixtures/', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+mkdirSync(REF_DIR, { recursive: true })
+const REF_PNG_PATH = join(REF_DIR, 'ref-fixture.png')
+writeFileSync(REF_PNG_PATH, Buffer.from(ONE_PX_PNG_BASE64, 'base64'))
 
 /** 本地 mock JSON API 服务器 */
 async function withMockServer(handler, fn) {
@@ -541,6 +562,7 @@ await test('runGenerate + mock OpenAI 兼容 images/generations：落盘 + 历�
       imageModel: 'gpt-image-2',
       outputTier: '2K',
       timeoutSeconds: 60,
+      requireReferenceImages: false, // 这条用例验的是 OpenAI 适配器，不是参考图门槛
     }
     assert.equal(imageConfigured(), true)
     const archive = runValidatePlan({ payload: makeListingPayload(7), mode: 'listing', listingImageCount: 7 })
@@ -575,12 +597,286 @@ await test('runGenerate + mock OpenAI 兼容 images/generations：落盘 + 历�
 
 await test('generateImage：未配置 Key 报错 + aliyun 端点/尺寸归一化', async () => {
   configRef.config = {}
-  await assert.rejects(() => runGenerate({ prompt: 'x' }), /未配置生图 API Key/)
+  await assert.rejects(() => runGenerate({ prompt: 'x' }), /未配置 apiz API Key/)
+  // 没有参考图也必须被拒（先于任何网络请求）
+  configRef.config = { imageApiKey: 'sk-x', imageProvider: 'apiz' }
+  await assert.rejects(() => runGenerate({ prompt: 'x' }), /必须提供产品参考图/)
+  assert.equal(referenceImagesRequired(), true)
   assert.equal(normalizeAliyunQwenImageSize('4096x4096'), '2048*2048')
   assert.equal(normalizeAliyunQwenImageSize('512x512'), '512*512')
   assert.ok(createAliyunQwenImageEndpoint('https://dashscope.aliyuncs.com/compatible-mode/v1').includes('/services/aigc/multimodal-generation/generation'))
   assert.equal(isAliyunApiBaseUrl('https://dashscope.aliyuncs.com/api/v1'), true)
   assert.equal(isAliyunApiBaseUrl('https://api.openai.com/v1'), false)
+})
+
+// ---------------------------------------------------------------- apiz（GPT Image 2.5 Flare）
+
+await test('apiz 尺寸吸附：插件尺寸 → 离散 width/height 或比例档位', () => {
+  // 2K 正方形原样命中；4K 正方形超最大边/像素预算 → 压到 2880×2880（8.29M 上限）
+  assert.deepEqual(resolveApizSize('2048x2048'), { width: 2048, height: 2048 })
+  assert.deepEqual(resolveApizSize('1024x1024'), { width: 1024, height: 1024 })
+  assert.deepEqual(resolveApizSize('4096x4096'), { width: 2880, height: 2880 })
+
+  // A+ 模块尺寸（插件按官方上传比例 ×2.x 算出）：比例误差 ≤2%，像素在官方区间
+  const cases = [
+    ['3184x1312', 1464, 600],   // 高级 A+ 横幅
+    ['2592x1616', 970, 600],    // 标准 A+ 大图
+    ['1760x2368', 463, 625],    // 品牌故事竖版
+    ['1944x1200', 970, 600],
+    ['2592x2400', 970, 900],
+  ]
+  for (const [input, uploadW, uploadH] of cases) {
+    const got = resolveApizSize(input)
+    assert.ok(got.width, `${input} 应给出 width/height：${JSON.stringify(got)}`)
+    const [, , targetW, targetH] = [0, 0, uploadW, uploadH]
+    const [w, h] = input.split('x').map(Number)
+    const ratioError = Math.abs((got.width / got.height) - (w / h)) / (w / h)
+    assert.ok(ratioError < 0.03, `${input} → ${got.width}x${got.height} 比例误差 ${(ratioError * 100).toFixed(1)}%`)
+    const pixels = got.width * got.height
+    assert.ok(pixels >= 655_360 && pixels <= 8_294_400, `${input} 像素越界：${pixels}`)
+    assert.ok(Math.max(got.width, got.height) <= 3840)
+    // 像素数不应被无谓放大（否则白花钱）：最多比目标大 1.6 倍
+    assert.ok(pixels <= w * h * 1.6, `${input} 像素被放大太多：${pixels} vs ${w * h}`)
+    assert.ok(targetW > 0 && targetH > 0)
+  }
+
+  // 超出 3:1 的极端长条 → 退回「比例 + 档位」
+  const extreme = resolveApizSize('3840x640')
+  assert.ok(extreme.aspect_ratio, `应为比例档位：${JSON.stringify(extreme)}`)
+  assert.ok(APIZ_ASPECT_RATIOS.includes(extreme.aspect_ratio))
+  assert.ok(APIZ_SIZE_TIERS.includes(extreme.size))
+  // 非像素写法：1K / auto
+  assert.deepEqual(resolveApizSize('1K'), { aspect_ratio: '1:1', size: '1K' })
+  assert.deepEqual(resolveApizSize('auto'), { aspect_ratio: '1:1', size: '2K' })
+  // 基础工具函数
+  assert.equal(snapToEnum(APIZ_WIDTHS, 3000), 2880)
+  assert.equal(snapToEnum(APIZ_HEIGHTS, 1000), 1024)
+  assert.equal(nearestAspectRatio(1464, 600), '21:9')
+  assert.equal(nearestAspectRatio(1024, 1024), '1:1')
+  assert.equal(tierFromPixels(2048 * 2048), '2K')
+  assert.equal(tierFromPixels(1024 * 1024), '1K')
+  assert.equal(tierFromPixels(2880 * 2880), '4K')
+})
+
+await test('apiz 质量/提示词归一化 + 报错体解析', async () => {
+  assert.equal(normalizeApizQuality('HIGH'), 'high')
+  assert.equal(normalizeApizQuality(' xhigh '), 'xhigh')
+  assert.equal(normalizeApizQuality('standard'), 'medium')
+  assert.equal(normalizeApizQuality('hd'), 'high')
+  assert.equal(normalizeApizQuality('ultra'), 'max')
+  assert.equal(normalizeApizQuality('bogus'), 'low')
+  assert.equal(normalizeApizQuality('bogus', 'medium'), 'medium')
+  assert.equal(normalizeApizQuality(undefined), 'low', '默认低配（省钱）')
+
+  const longPrompt = 'a'.repeat(7100)
+  const clamped = clampApizPrompt(longPrompt)
+  assert.equal(clamped.prompt.length, 7000)
+  assert.equal(clamped.warnings.length, 1)
+  assert.equal(clampApizPrompt('  short  ').prompt, 'short')
+  assert.throws(() => clampApizPrompt('   '), /非空 prompt/)
+
+  // apiz 的报错体是 { detail: "…" }
+  const detailError = await getApiErrorMessage(new Response(JSON.stringify({ detail: 'quality 必须为 low、medium、high、xhigh 或 max' }), { status: 400 }))
+  assert.equal(detailError, 'quality 必须为 low、medium、high、xhigh 或 max')
+  const listError = await getApiErrorMessage(new Response(JSON.stringify({ detail: [{ msg: 'prompt 必填' }, '长度超限'] }), { status: 422 }))
+  assert.equal(listError, 'prompt 必填；长度超限')
+  // 其余服务商仍按 error.message 解析
+  const openaiError = await getApiErrorMessage(new Response(JSON.stringify({ error: { message: 'invalid api key' } }), { status: 401 }))
+  assert.equal(openaiError, 'invalid api key')
+})
+
+await test('apiz Key 解析：配置 > 环境变量 > 本机 CLI 登录态（CLI 需显式开启）', () => {
+  const saved = { config: process.env.APIZ_CONFIG, key: process.env.APIZ_API_KEY }
+  try {
+    process.env.APIZ_CONFIG = new URL('../.tmp/no-such-apiz-config.toml', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+    process.env.APIZ_API_KEY = ''
+    assert.deepEqual(resolveApizApiKey('sk-from-config'), { key: 'sk-from-config', source: 'config' })
+    assert.deepEqual(resolveApizApiKey(''), { key: '', source: 'none' })
+
+    process.env.APIZ_API_KEY = 'sk-from-env'
+    assert.deepEqual(resolveApizApiKey(''), { key: 'sk-from-env', source: 'env' })
+    process.env.APIZ_API_KEY = ''
+
+    const cliConfig = new URL('../.tmp/apiz-cli-config.toml', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+    writeFileSync(cliConfig, '[profile.default]\napi_key = "sk-from-cli"\n')
+    process.env.APIZ_CONFIG = cliConfig
+    // 默认不自动复用登录态：没显式开启就当没配
+    assert.deepEqual(resolveApizApiKey(''), { key: '', source: 'none' })
+    assert.deepEqual(resolveApizApiKey('', { allowCliAuth: true }), { key: 'sk-from-cli', source: 'apiz-cli' })
+    assert.equal(readApizCliApiKey(), 'sk-from-cli')
+  } finally {
+    process.env.APIZ_CONFIG = saved.config
+    process.env.APIZ_API_KEY = saved.key
+  }
+})
+
+await test('runGenerate + apiz 异步任务：create → query → 下载 → 落盘（含参考图上传）', async () => {
+  const requests = []
+  const uploadedRefs = []
+  let queryCount = 0
+  let mockBase = ''
+  await withMockServer((req, res) => {
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      requests.push({ url: req.url, auth: req.headers.authorization, body })
+      if (req.url === '/api/v3/tasks/create') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ code: 200, data: { task_id: 'task_abc', price: 12 } }))
+        return
+      }
+      if (req.url === '/api/v3/tasks/query') {
+        queryCount += 1
+        // 第一次返回处理中，第二次完成 —— 覆盖轮询分支
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(queryCount < 2
+          ? { code: 200, data: { status: 'processing' } }
+          : { code: 200, data: { status: 'completed', result: { images: [`${mockBase}/cdn/out.png`] } } }))
+        return
+      }
+      if (req.url === '/cdn/out.png') {
+        res.writeHead(200, { 'content-type': 'image/png' })
+        res.end(Buffer.from(ONE_PX_PNG_BASE64, 'base64'))
+        return
+      }
+      res.writeHead(404)
+      res.end('{}')
+    })
+  }, async (url) => {
+    mockBase = url
+    configRef.config = {
+      plannerApiKey: '',
+      imageProvider: 'apiz',
+      imageApiUrl: url,
+      imageApiKey: 'sk-apiz',
+      outputTier: '2K',
+      timeoutSeconds: 30,
+      imagePollSeconds: 0.01,
+      imageQuality: 'xhigh',
+      // 注入上传器：单测不起真 apiz CLI
+      imageUploader: async (dataUrl) => {
+        uploadedRefs.push(dataUrl.slice(0, 22))
+        return `${url}/cdn/ref-${uploadedRefs.length}.png`
+      },
+    }
+    assert.equal(imageConfigured(), true)
+    assert.equal(imageKeySource(), 'config')
+    const archive = runValidatePlan({ payload: makeListingPayload(7), mode: 'listing', listingImageCount: 7 })
+
+    // MAIN：带产品参考图、但不挂风格板
+    const main = await runGenerate({ planId: archive.id, slot: 'MAIN', referenceImages: [REF_PNG_PATH] })
+    assert.ok(fileExists(main.file))
+    const createMain = requests.find((r) => r.url === '/api/v3/tasks/create')
+    assert.equal(createMain.auth, 'Bearer sk-apiz')
+    assert.equal(createMain.body.model, 'apiz/gpt-image-2.5-flare')
+    assert.deepEqual(createMain.body.params.width, 2048)
+    assert.deepEqual(createMain.body.params.height, 2048)
+    assert.equal(createMain.body.params.quality, 'xhigh')
+    assert.ok(!('aspect_ratio' in createMain.body.params), '用了 width/height 就不能再带比例')
+    assert.equal(createMain.body.params.reference_image_urls.length, 1, 'MAIN 只该带产品参考图')
+    // 异步任务元信息进历史
+    assert.equal(main.record.taskId, 'task_abc')
+    assert.equal(main.record.price, 12)
+    assert.equal(main.record.actualSize, '2048x2048')
+    assert.equal(main.record.quality, 'xhigh')
+
+    // PT01：产品参考图 + 风格板 → 两张都要先换成公网 URL，风格板在最后
+    requests.length = 0
+    const pt = await runGenerate({ planId: archive.id, slot: 'PT01', referenceImages: [REF_PNG_PATH] })
+    const createPt = requests.find((r) => r.url === '/api/v3/tasks/create')
+    assert.equal(createPt.body.params.reference_image_urls.length, 2)
+    assert.ok(/^https?:\/\//.test(createPt.body.params.reference_image_urls[0]))
+    assert.equal(uploadedRefs.length, 2, '产品图 + 风格板都该上传（内容不同 → 各传一次）')
+    assert.ok(!(main.warnings ?? []).some((w) => /参考图|上传/.test(w)), 'MAIN 不该有上传告警')
+    assert.ok(fileExists(pt.file))
+
+    // 参考图顺序：产品图在前、风格板必须留最后（Prompt 的风格守卫依赖这个顺序）；
+    // 同一张图（同内容哈希）只上传一次，命中缓存
+    const onePx = `data:image/png;base64,${ONE_PX_PNG_BASE64}`
+    const uploadedBefore = uploadedRefs.length
+    let uploadCalls = 0
+    const ordered = await resolveApizReferenceUrls([onePx, 'https://example.com/product.png', onePx], {
+      uploader: async () => {
+        uploadCalls += 1
+        return `https://cdn.example.com/ref-${uploadedBefore + uploadCalls}.png`
+      },
+    })
+    assert.equal(ordered.length, 2, '同一张图重复传入只算一张')
+    assert.equal(ordered[0], 'https://example.com/product.png', 'http URL 原样保留')
+    assert.ok(/^https?:\/\//.test(ordered[1]), `data URL 必须换成公网 URL：${ordered[1]}`)
+    assert.ok(uploadCalls <= 1, '同一张图不该重复上传')
+
+    // 同一张图重复传入：只保留最后一次（不重复计费，也不破坏"风格板在最后"）
+    const dupe = await resolveApizReferenceUrls(['https://a/x.png', 'https://a/y.png', 'https://a/x.png'])
+    assert.deepEqual(dupe, ['https://a/y.png', 'https://a/x.png'])
+
+    // outputPath：必须真的落盘（曾经的 bug：只把路径写进历史，文件不存在）
+    requests.length = 0
+    const outDir = new URL('../.tmp/apiz-out/', import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:')
+    const custom = await runGenerate({ prompt: 'custom path', size: '1024x1024', referenceImages: [REF_PNG_PATH], outputPath: join(outDir, 'nested', 'mine.jpg') })
+    assert.ok(fileExists(custom.file), `outputPath 没落盘：${custom.file}`)
+    assert.ok(custom.file.endsWith('.png'), `非 png 扩展名应被纠正：${custom.file}`)
+    assert.ok(custom.warnings?.some((w) => w.includes('.png')), '扩展名被纠正时应有提醒')
+    const createCustom = requests.find((r) => r.url === '/api/v3/tasks/create')
+    assert.equal(createCustom.body.params.width, 1024)
+    assert.equal(createCustom.body.params.height, 1024)
+    clearHistory()
+  })
+})
+
+await test('apiz 任务失败 / 轮询超时：报错可读且提示不要重投', async () => {
+  await withMockServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url === '/api/v3/tasks/create') {
+        res.end(JSON.stringify({ code: 200, data: { task_id: 'task_fail', price: 10 } }))
+        return
+      }
+      res.end(JSON.stringify({ code: 200, data: { status: 'failed', error: '上游拒绝：内容违规' } }))
+    })
+  }, async (url) => {
+    configRef.config = { imageProvider: 'apiz', imageApiUrl: url, imageApiKey: 'sk', timeoutSeconds: 5, imagePollSeconds: 0.01 }
+    await assert.rejects(() => runGenerate({ prompt: 'x', referenceImages: [REF_PNG_PATH] }), /apiz 任务失败.*内容违规.*task_fail/)
+  })
+
+  // 轮询一直 processing → 超时报错里必须包含「不要重新提交」
+  await withMockServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(req.url === '/api/v3/tasks/create'
+        ? { code: 200, data: { task_id: 'task_slow' } }
+        : { code: 200, data: { status: 'processing' } }))
+    })
+  }, async (url) => {
+    configRef.config = { imageProvider: 'apiz', imageApiUrl: url, imageApiKey: 'sk', timeoutSeconds: 1, imagePollSeconds: 0.05 }
+    await assert.rejects(() => runGenerate({ prompt: 'x', referenceImages: [REF_PNG_PATH] }), (err) => {
+      assert.match(err.message, /轮询超时/)
+      assert.match(err.message, /不要重新提交/)
+      assert.match(err.message, /task_slow/)
+      return true
+    })
+  })
+})
+
+await test('apiz：报错体 detail 直接冒到工具层 + 超过 1 张/遮罩明确拒绝', async () => {
+  await withMockServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ detail: 'prompt 必填且长度为 1–7000 字符' }))
+    })
+  }, async (url) => {
+    configRef.config = { imageProvider: 'apiz', imageApiUrl: url, imageApiKey: 'sk', timeoutSeconds: 5 }
+    await assert.rejects(() => runGenerate({ prompt: 'x', referenceImages: [REF_PNG_PATH] }), /prompt 必填且长度为 1–7000 字符/)
+  })
+
+  await assert.rejects(
+    () => generateImage({ prompt: 'x', size: '2048x2048', n: 2 }, { provider: 'apiz', apiKey: 'sk', model: 'apiz/gpt-image-2.5-flare' }),
+    /一次只出一张图/,
+  )
 })
 
 // ---------------------------------------------------------------- 杂项

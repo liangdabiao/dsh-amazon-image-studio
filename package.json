@@ -1,6 +1,6 @@
 {
   "name": "dsh-amazon-image-studio",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "亚马逊图片工作台：Listing 图（MAIN+PT01-06，7-12 张）与四套 A+ 模块 AI 策划、逐张生图 Prompt 组装、合规自检、色卡风格板、6 站点本地化；四服务商生图适配（火山 Seedream / OpenAI 兼容 / 阿里百炼）+ dreamina/apiz CLI 兜底；AI 人物媒体 XMP 打标；侧栏「亚马逊图片」工作台与策划/生成历史持久化。方法论移植自 Ali-Aria/amazon-image-studio（MIT）。",
@@ -19,6 +19,7 @@
     "lib",
     "skills",
     "assets",
+    "scripts",
     "locale/*.json",
     "cordis.patch.yml",
     "icon.svg",
@@ -38,6 +39,9 @@
   "scripts": {
     "test": "node test/lib.test.mjs",
     "selftest": "node scripts/selftest.mjs",
+    "api-test": "node scripts/api-test.mjs",
+    "client-smoke": "node scripts/client-smoke.mjs",
+    "verify": "node test/lib.test.mjs && node scripts/selftest.mjs && node scripts/api-test.mjs && node scripts/client-smoke.mjs",
     "sandbox": "bash scripts/dev-sandbox.sh"
   },
   "dependencies": {

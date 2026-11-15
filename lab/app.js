@@ -32,11 +32,13 @@ const state = {
     referenceImages: '',
     stylePresetId: 'clean-tech',
     tier: '2K',
+    quality: 'low',
     styleDensityMode: 'rich',
   },
   history: [],
   plans: [],
   tagFiles: [],
+  refs: [],             // 已上传的产品参考图 [{ name, path, size }]
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -125,7 +127,8 @@ function renderRailFoot() {
   const dot = (ok, warnWhen) => `<span class="dot ${ok ? 'ok' : warnWhen ? 'warn' : 'bad'}"></span>`
   railFoot.innerHTML = `
     <div>${dot(s.planner.configured, true)}策划 API：${s.planner.configured ? esc(s.planner.model || '已配置') : '未配置（对话内策划）'}</div>
-    <div>${dot(s.image.configured, true)}生图 API：${s.image.configured ? esc(s.image.provider) : '未配置（CLI 兜底）'}</div>
+    <div>${dot(s.image.configured, false)}生图：apiz · ${s.image.configured ? `${esc(s.image.quality || 'low')} / ${esc(s.image.outputTier || '2K')}` : '未配置（去「设置」填 Key）'}</div>
+    <div>${dot(s.image.requireReferenceImages !== false, true)}参考图：${s.image.requireReferenceImages !== false ? '必须上传' : '可不传'}</div>
     <div style="margin-top:6px">v${esc(s.version)} · ${esc(s.dataDir)}</div>`
 }
 
@@ -146,9 +149,10 @@ function readForm() {
   for (const key of ['productTitle', 'brand', 'category', 'color', 'material', 'audience', 'packageIncludes', 'sellingPoints', 'forbidden']) {
     f[key] = formValue(`f-${key}`)
   }
-  f.referenceImages = formValue('f-refs')
+  f.referenceImages = refPaths()
   f.stylePresetId = formValue('f-style') || 'clean-tech'
   f.tier = formValue('f-tier') || '2K'
+  f.quality = formValue('f-quality') || 'low'
   f.styleDensityMode = formValue('f-density') || 'rich'
   return f
 }
@@ -161,7 +165,7 @@ function writeForm() {
   set('f-market', f.marketplaceId); set('f-count', f.listingImageCount); set('f-aplus', f.aplusType)
   if (document.getElementById('f-listing')) document.getElementById('f-listing').value = f.listingText
   for (const key of ['productTitle', 'brand', 'category', 'color', 'material', 'audience', 'packageIncludes', 'sellingPoints', 'forbidden']) set(`f-${key}`, f[key])
-  set('f-refs', f.referenceImages); set('f-style', f.stylePresetId); set('f-tier', f.tier); set('f-density', f.styleDensityMode)
+  set('f-style', f.stylePresetId); set('f-tier', f.tier); set('f-density', f.styleDensityMode); set('f-quality', f.quality)
   syncModeVisibility()
 }
 
@@ -182,7 +186,7 @@ function planRequestBody(f) {
     productTitle: f.productTitle, brand: f.brand, category: f.category,
     color: f.color, material: f.material, audience: f.audience,
     packageIncludes: f.packageIncludes, sellingPoints: f.sellingPoints, forbidden: f.forbidden,
-    referenceImages: f.referenceImages ? f.referenceImages.split(/\r?\n|[,;，；]/).map((s) => s.trim()).filter(Boolean) : undefined,
+    referenceImages: refPaths().length ? refPaths() : undefined,
     tier: f.tier,
   }
 }
@@ -196,7 +200,8 @@ function renderHome() {
   <h2>策划台</h2>
   <div class="sub">粘贴 Listing 文案 → AI 策划逐张方案 → 逐槽位检查 Prompt → 生成（一次一张）。主图白底不挂风格板，附图/A+ 自动挂。</div>
   ${state.status && !state.status.planner.configured ? `<div class="alert warn">策划 API 未配置：「AI 策划」会把策划指引填进对话，由当前对话的模型完成策划并自动校验存档。也可以在插件设置里配置 plannerApiKey 走独立策划模型。</div>` : ''}
-  ${state.status && !state.status.image.configured ? `<div class="alert warn">生图 API 未配置：「生成」会失败；可点「填进对话生图」改走即梦 / apiz CLI 通道。</div>` : ''}
+  ${state.status && !state.status.image.configured ? `<div class="alert warn">还没配置 apiz Key：「生成」会被拒绝。去侧栏「设置」页填 Key 并保存（也可以打开「复用本机 apiz CLI 登录态」）。</div>` : ''}
+  ${state.status && state.status.image.requireReferenceImages !== false && !state.refs.length ? `<div class="alert warn">先生成不了：本插件要求必须上传产品的实拍/包装/结构图作为参考图（下面「产品参考图」区拖进去即可），避免模型凭空编一个商品。</div>` : ''}
 
   <div class="card">
     <div class="row" style="margin-bottom:12px">
@@ -225,7 +230,17 @@ function renderHome() {
       <label class="field">材质<input id="f-material" placeholder="可选"></label>
       <label class="field">目标人群<input id="f-audience" placeholder="可选"></label>
       <label class="field">包装清单<input id="f-packageIncludes" placeholder="可选"></label>
-      <label class="field">参考图路径<textarea id="f-refs" rows="2" placeholder="绝对路径，每行一张（实拍/包装/结构图）"></textarea></label>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <div class="row" style="justify-content:space-between">
+        <span>产品参考图（实拍 / 包装 / 结构图；生成时一起传给模型，主图也会带）</span>
+        <span class="hint" id="ref-summary"></span>
+      </div>
+      <div class="dropzone" id="ref-dropzone" style="margin-top:8px;padding:16px">
+        点击选择或拖入 JPG / PNG / WebP（可多选，最多 16 张）
+        <input type="file" id="ref-input" multiple accept=".png,.jpg,.jpeg,.webp" hidden>
+      </div>
+      <div class="ref-grid" id="ref-list"></div>
     </div>
     <div class="grid2" style="margin-top:10px">
       <label class="field">卖点（每行一条）<textarea id="f-sellingPoints" rows="3" placeholder="可选"></textarea></label>
@@ -242,7 +257,16 @@ function renderHome() {
         </select>
       </label>
       <label class="field" style="width:80px">档位
-        <select id="f-tier"><option value="2K">2K</option><option value="4K">4K</option></select>
+        <select id="f-tier"><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select>
+      </label>
+      <label class="field" style="width:112px">质量
+        <select id="f-quality">
+          <option value="low">低（最省）</option>
+          <option value="medium">中</option>
+          <option value="high">高</option>
+          <option value="xhigh">更高</option>
+          <option value="max">最高</option>
+        </select>
       </label>
       <label class="field" style="width:100px">版面密度
         <select id="f-density"><option value="rich">信息丰富</option><option value="minimal">简洁留白</option></select>
@@ -269,6 +293,7 @@ function renderHome() {
   document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener('change', () => { state.form.mode = el.value; syncModeVisibility() }))
   document.getElementById('btn-plan').onclick = runPlanFlow
   document.getElementById('btn-plan-chat').onclick = planViaChat
+  bindRefUpload()
   document.querySelectorAll('.style-card').forEach((el) => {
     el.addEventListener('click', () => {
       state.form.stylePresetId = el.dataset.style
@@ -281,6 +306,121 @@ function renderHome() {
   writeForm()
   syncModeVisibility()
   if (state.plan) renderPlanResult(state.plan)
+}
+
+// ---------------------------------------------------------------- 产品参考图（上传 → 落盘 → 随生图一起传）
+
+const REF_ACCEPT = /\.(png|jpe?g|webp)$/i
+const REF_MAX_BYTES = 20 * 1024 * 1024
+const REF_MAX_COUNT = 16
+
+function refPaths() {
+  return state.refs.map((item) => item.path)
+}
+
+function bindRefUpload() {
+  bindRefUploadZone()
+  renderRefList()
+  // 恢复上次上传但没删的图（同机刷新不丢）
+  if (!state.refs.length) loadExistingRefs()
+}
+
+// 用属性赋值而不是 addEventListener：上传完会重建 dropzone 的内容，
+// 重复绑定会让一次拖拽触发多次上传。
+function bindRefUploadZone() {
+  const zone = document.getElementById('ref-dropzone')
+  const input = document.getElementById('ref-input')
+  if (!zone || !input) return
+  zone.onclick = () => input.click()
+  input.onchange = () => { addRefFiles([...input.files]); input.value = '' }
+  zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('drag') }
+  zone.ondragleave = () => zone.classList.remove('drag')
+  zone.ondrop = (e) => {
+    e.preventDefault()
+    zone.classList.remove('drag')
+    addRefFiles([...e.dataTransfer.files])
+  }
+}
+
+async function loadExistingRefs() {
+  try {
+    const result = await api('/api/references')
+    if (!result.files?.length) return
+    state.refs = result.files.slice(0, REF_MAX_COUNT)
+    renderRefList()
+  } catch { /* 老宿主没有这个接口就静默跳过 */ }
+}
+
+function addRefFiles(files) {
+  const usable = []
+  for (const file of files) {
+    if (!REF_ACCEPT.test(file.name)) { toast(`跳过不支持的格式：${file.name}`); continue }
+    if (file.size > REF_MAX_BYTES) { toast(`${file.name} 超过 20MB，请先压缩`); continue }
+    usable.push(file)
+  }
+  if (!usable.length) return
+  const room = REF_MAX_COUNT - state.refs.length
+  if (room <= 0) return toast(`最多 ${REF_MAX_COUNT} 张参考图`)
+  void uploadRefs(usable.slice(0, room))
+}
+
+async function uploadRefs(files) {
+  const zone = document.getElementById('ref-dropzone')
+  if (zone) zone.textContent = `上传中…（${files.length} 张）`
+  try {
+    const payload = []
+    for (const file of files) payload.push({ name: file.name, data: await readAsDataUrl(file) })
+    const result = await post('/api/upload', { files: payload })
+    state.refs = [...result.files, ...state.refs].slice(0, REF_MAX_COUNT)
+    if (result.failed?.length) toast(`${result.failed.length} 张上传失败：${result.failed[0].error}`)
+    else toast(`已上传 ${result.files.length} 张参考图`)
+  } catch (err) {
+    toast(`上传失败：${String(err.message || err)}`)
+  } finally {
+    const zone2 = document.getElementById('ref-dropzone')
+    if (zone2) zone2.innerHTML = `点击选择或拖入 JPG / PNG / WebP（可多选，最多 ${REF_MAX_COUNT} 张）<input type="file" id="ref-input" multiple accept=".png,.jpg,.jpeg,.webp" hidden>`
+    bindRefUploadZone()
+    renderRefList()
+  }
+}
+
+function renderRefList() {
+  const list = document.getElementById('ref-list')
+  const summary = document.getElementById('ref-summary')
+  if (summary) summary.textContent = state.refs.length ? `${state.refs.length} 张（生成时会一起传给模型）` : '未上传'
+  if (!list) return
+  list.innerHTML = state.refs.map((item) => `
+    <div class="ref-card" data-path="${esc(item.path)}">
+      <img src="${mediaUrl(item.path)}" alt="${esc(item.name)}" loading="lazy">
+      <button class="ref-del" data-path="${esc(item.path)}" title="移除">×</button>
+      <span class="ref-name" title="${esc(item.name)}">${esc(item.name)}</span>
+    </div>`).join('')
+  list.querySelectorAll('.ref-del').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation()
+      const target = btn.dataset.path
+      state.refs = state.refs.filter((item) => item.path !== target)
+      renderRefList()
+      try { await post('/api/references/remove', { path: target }) } catch { /* 文件已不在也不算错 */ }
+    }
+  })
+  list.querySelectorAll('.ref-card img').forEach((img) => {
+    img.onclick = () => {
+      const card = img.closest('.ref-card')
+      const item = state.refs.find((r) => r.path === card?.dataset.path)
+      if (!item) return
+      openViewer(item.name || '参考图', `<img src="${mediaUrl(item.path)}">`, mediaUrl(item.path))
+    }
+  })
+}
+
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
+    reader.readAsDataURL(file)
+  })
 }
 
 function renderAplusModules() {
@@ -436,11 +576,25 @@ function renderPlanResult(plan) {
     }
     const genBtn = card.querySelector('[data-act="generate"]')
     genBtn.onclick = async () => {
+      // 硬门槛：没有产品参考图不让生成（与宿主侧同一规则）
+      if (!refPaths().length) {
+        toast('先上传产品参考图再生成（设置里可关 requireReferenceImages，但不建议）')
+        document.getElementById('ref-dropzone')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
       genBtn.disabled = true
       genBtn.textContent = '生成中…'
       try {
         const composed = await composeSlot(slot)
-        const result = await post('/api/generate', { planId: plan.id, slot, tier: state.form.tier, stylePresetId: state.form.stylePresetId, styleDensityMode: state.form.styleDensityMode })
+        const result = await post('/api/generate', {
+          planId: plan.id,
+          slot,
+          tier: state.form.tier,
+          quality: state.form.quality,
+          stylePresetId: state.form.stylePresetId,
+          styleDensityMode: state.form.styleDensityMode,
+          referenceImages: refPaths().length ? refPaths() : undefined,
+        })
         state.generated[slot] = result
         const status = card.querySelector('[data-act-status]')
         status.innerHTML = `<img src="${mediaUrl(result.file)}" alt="生成结果" data-file="${esc(result.file)}">`
@@ -693,6 +847,105 @@ async function runTagging() {
   }
 }
 
+// ---------------------------------------------------------------- 视图：设置（只配 apiz）
+
+const QUALITY_LABELS = { low: '低（最省）', medium: '中', high: '高', xhigh: '更高', max: '最高' }
+const KEY_SOURCE_LABELS = { config: '面板里填的 Key', env: '环境变量 APIZ_API_KEY', 'apiz-cli': '本机 apiz CLI 登录态', none: '未配置' }
+
+async function renderSettings() {
+  app.innerHTML = '<div class="loading">读取设置…</div>'
+  let settings
+  try {
+    settings = (await api('/api/settings')).settings
+  } catch (err) {
+    app.innerHTML = `<div class="alert bad">读取设置失败：${esc(String(err.message || err))}</div>`
+    return
+  }
+  const s = settings.image
+  app.innerHTML = `
+  <h2>设置</h2>
+  <div class="sub">生图只走 apiz（GPT Image 2.5 Flare）。这里保存的配置会写进 profile patch 并立即生效。</div>
+
+  ${settings.available ? '' : `<div class="alert bad">宿主没有 config-editor 服务，这个页面的保存会失败：请升级 dsh，或直接改 profile 的 <code>cordis.patch.yml</code>。</div>`}
+
+  <div class="card">
+    <h3>apiz 认证</h3>
+    <div class="row" style="gap:10px">
+      <div class="row" style="gap:6px"><span class="dot ${s.keySource === 'none' ? 'bad' : 'ok'}"></span>当前 Key 来源：<b>${esc(KEY_SOURCE_LABELS[s.keySource] ?? s.keySource)}</b></div>
+      <span class="grow"></span>
+      <span class="hint">${s.hasApiKey ? `已保存：${esc(s.apiKey)}` : '还没有在面板里保存过 Key'}</span>
+    </div>
+    <label class="field" style="margin-top:10px">apiz API Key（sk-…）
+      <input id="s-key" type="password" placeholder="${s.hasApiKey ? '已保存，留空则不修改' : '粘贴 sk- 开头的 Key'}" autocomplete="off">
+    </label>
+    <label class="row" style="gap:6px;margin-top:8px">
+      <input type="checkbox" id="s-clearkey" ${s.hasApiKey ? '' : 'disabled'}> 清除已保存的 Key
+    </label>
+    <label class="row" style="gap:6px;margin-top:8px">
+      <input type="checkbox" id="s-cliauth" ${s.useCliAuth ? 'checked' : ''}> 复用本机 apiz CLI 登录态
+      <span class="hint">（${s.cliKeyAvailable ? '本机检测到 apiz 登录文件' : '本机没有 apiz 登录文件'}；默认关闭——不配置 Key 就不允许生图）</span>
+    </label>
+    <label class="field" style="margin-top:10px">模型 id（留空用默认 ${esc(settings.defaultModel)}）
+      <input id="s-model" placeholder="${esc(settings.defaultModel)}" value="${esc(s.model === settings.defaultModel ? '' : s.model)}">
+    </label>
+  </div>
+
+  <div class="card">
+    <h3>生图默认值</h3>
+    <div class="grid2">
+      <label class="field">质量档位
+        <select id="s-quality">${settings.qualities.map((q) => `<option value="${q}" ${s.quality === q ? 'selected' : ''}>${esc(QUALITY_LABELS[q] ?? q)}</option>`).join('')}</select>
+      </label>
+      <label class="field">输出档位
+        <select id="s-tier">${settings.tiers.map((t) => `<option value="${t}" ${s.outputTier === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      </label>
+    </div>
+    <div class="sub" style="margin-top:6px">质量与档位都影响价格：low + 1K 最便宜；档位越高、质量越高越贵（按 token 计费，与分辨率不是一回事）。</div>
+    <label class="row" style="gap:6px;margin-top:10px">
+      <input type="checkbox" id="s-transparency" ${s.transparency ? 'checked' : ''}> 透明背景（输出 PNG；开启后 prompt 不要描述背景，亚马逊主图请保持关闭）
+    </label>
+    <label class="row" style="gap:6px;margin-top:8px">
+      <input type="checkbox" id="s-require-ref" ${s.requireReferenceImages ? 'checked' : ''}> 必须上传产品参考图才能生成（建议保持开启）
+    </label>
+    <label class="field" style="margin-top:10px;width:180px">API 超时（秒）
+      <input id="s-timeout" type="number" min="30" max="3600" value="${Number(s.timeoutSeconds)}">
+    </label>
+  </div>
+
+  <div class="row">
+    <button class="btn primary" id="s-save" ${settings.available ? '' : 'disabled'}>保存设置</button>
+    <span class="hint">保存后立即生效，无需重启；面板刷新一次即可看到状态变化。</span>
+  </div>`
+
+  document.getElementById('s-save').onclick = async () => {
+    const btn = document.getElementById('s-save')
+    btn.disabled = true
+    btn.textContent = '保存中…'
+    try {
+      const patch = {
+        imageQuality: document.getElementById('s-quality').value,
+        outputTier: document.getElementById('s-tier').value,
+        imageTransparency: document.getElementById('s-transparency').checked,
+        imageUseApizCliAuth: document.getElementById('s-cliauth').checked,
+        requireReferenceImages: document.getElementById('s-require-ref').checked,
+        timeoutSeconds: Number(document.getElementById('s-timeout').value),
+        imageModel: document.getElementById('s-model').value.trim(),
+      }
+      const key = document.getElementById('s-key').value.trim()
+      if (document.getElementById('s-clearkey').checked) patch.imageApiKey = ''
+      else if (key) patch.imageApiKey = key
+      await post('/api/settings', patch)
+      await loadStatus()
+      toast('设置已保存并生效')
+      renderSettings()
+    } catch (err) {
+      toast(`保存失败：${String(err.message || err)}`)
+      btn.disabled = false
+      btn.textContent = '保存设置'
+    }
+  }
+}
+
 // ---------------------------------------------------------------- 视图：指南
 
 function renderGuide() {
@@ -706,9 +959,20 @@ function renderGuide() {
       <li><b>① 查槽位</b>：<code>amz_slots</code> 拿 Listing 槽位表或 A+ 模块编排（可增删模块，1-${m.maxAPlusModuleCount} 个）。</li>
       <li><b>② AI 策划</b>：<code>amz_plan</code>（配置了策划 Key 直接调模型；未配置返回指引由对话模型策划）→ <code>amz_validate_plan</code> 校验存档拿 planId。</li>
       <li><b>③ 逐张确认</b>：<code>amz_prompt</code> 组装最终 Prompt（风格块/密度/负面词/守卫/分辨率自动带上），用户过目。</li>
-      <li><b>④ 一次一张生成</b>：<code>amz_generate</code>（planId + slot）；未配生图 Key 时走即梦 / apiz CLI 兜底。</li>
+      <li><b>④ 一次一张生成</b>：<code>amz_generate</code>（planId + slot）。<b>必须带产品参考图</b>（风格板不算），没传会被直接拒绝；生图只走 apiz，没在「设置」里配 Key 也不允许生成。</li>
       <li><b>⑤ 打标</b>：需要披露的 AI 人物媒体用 <code>amz_tag_performer</code> 写 XMP。</li>
     </ul>
+  </div>
+  <div class="card guide-section">
+    <h3>生图是怎么走的</h3>
+    <ol>
+      <li>你的产品图 → 用 <code>apiz upload</code> 传到 apiz CDN 换公网 URL（免费，同一张只传一次）。</li>
+      <li>插件按槽位比例算出目标尺寸，吸附到 apiz 支持的「比例 × 1K/2K/4K 或离散宽高」。</li>
+      <li>带上产品图 + 风格板（附图/A+ 才有）提交生成任务，创建时就预扣积分。</li>
+      <li>插件每 2 秒轮询（逐步退避到 5 秒）；超时只报错并给 <code>task_id</code>，<b>不要重新提交</b>。</li>
+      <li>出图后下载落盘、写入生成历史（实际尺寸 / 质量档位 / 任务号 / 花费）。</li>
+    </ol>
+    <div class="hint">主图（MAIN）永远纯白底、不挂风格板；附图/A+ 才自动挂，风格板固定是最后一张参考图。</div>
   </div>
   <div class="card guide-section">
     <h3>Listing 合规清单</h3>
@@ -731,7 +995,7 @@ function renderGuide() {
 
 // ---------------------------------------------------------------- 路由
 
-const routes = { home: renderHome, plans: renderPlans, gallery: renderGallery, tagging: renderTagging, guide: renderGuide }
+const routes = { home: renderHome, plans: renderPlans, gallery: renderGallery, tagging: renderTagging, settings: renderSettings, guide: renderGuide }
 
 function route() {
   const view = (location.hash.replace(/^#\//, '') || 'home').split('?')[0]

@@ -90,7 +90,7 @@ window.__ModuleLoader__.load({
       }
 
       ctx.slots.inject('sidebar.panellist', () =>
-        ctx.slots.register({ name: 'sidebar.panellist', id: PANEL, order: 15, label: () => LABEL }, StudioIcon))
+        ctx.slots.register({ name: 'sidebar.panellist', id: PANEL, order: 22, label: () => LABEL }, StudioIcon))
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL }, StudioPanel))
     }
 

@@ -78,14 +78,16 @@ A+ 四套编排（生图换算按模块比例，官方上传尺寸如下）：
 - 生成前把 `amz_prompt` 给你的最终 Prompt 简要过目给用户；**一次只调一张**，完成后继续下一张。
 - Highlight Tile 的 `textTitle`/`textBody` 外部文案单独输出给用户，不写进生图 Prompt。
 
-### 生图通道兜底
+### 生图通道（只有 apiz）
 
-插件没配生图 API Key（`amz_generate` 会报错提示）时，改用 CLI 通道（与「电商视觉创作」插件同款）：
+生图**只走 apiz 的 GPT Image 2.5 Flare**（异步任务制：`POST /api/v3/tasks/create` → 轮询 `/api/v3/tasks/query` → 下载结果 URL）。要点：
 
-- **即梦 dreamina-canvas**（默认）：`dreamina-canvas auth account` 查积分（2K 约 6 分/张），Prompt 用 `amz_prompt` 组装好的最终 Prompt，参考图 ≤10 张（风格板/模板图当最后一张参考图；MAIN 不给风格图）。
-- **apiz CLI**：`apiz/gpt-image-2.5-flare` 等 13 个模型，参考图 `--params '{"reference_image_urls":[…]} '`。
-
-CLI 出的图也请告诉用户路径；想要统一入档可以让用户在插件设置里补生图 Key 后用 `amz_generate`。
+- **没有 Key 不许生图**：插件设置里 `imageApiKey`（面板「设置」页填）或环境变量 `APIZ_API_KEY`；本机 `apiz auth login` 登录态只有在设置里打开 `imageUseApizCliAuth` 时才复用（默认关）。都没有就直接报错——不要改用其他生图渠道，也不要让用户"先随便出一张"。
+- **必须给参考图**：`requireReferenceImages` 默认开，没有产品参考图 `amz_generate` 会直接拒绝。用户没给图就先要图（实拍/包装/结构图），或让他在面板产品参考图区上传。
+- 计费：按 token 实际用量（100 积分 = ¥1），创建即预扣、完成多退少补、**失败整笔退还**。默认 `quality=low`（最省）；用户在意画质再逐张提高，不要一上来就给 xhigh/max。
+- 尺寸：插件会把 A+ 的精确像素吸附到 apiz 的离散 width/height（比例误差 ≤2%、像素最接近目标），历史里 `actualSize` 是实际出的尺寸（可能不同于 `generationSize`，属正常）。
+- 参考图：apiz 只收公网 HTTP(S) URL，插件自动把风格板/产品图用 `apiz upload` 传上 CDN 换 URL（免费、按内容哈希缓存）。**顺序有意义**：用户的产品图在前、风格板固定最后一张；同一张图重复传会被去重。
+- **轮询超时不要重投**：报错里带 `task_id`，正确做法是 `apiz tasks get <task_id>` 取结果；重新提交会二次扣费。
 
 ## 4. 策划档案与历史（amz_history）
 
