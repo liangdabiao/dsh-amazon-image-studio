@@ -77,8 +77,9 @@ try {
 
   const status = await get('/api/status')
   const statusBody = json(status)
-  check('status：未配 Key 时 configured=false', statusBody?.ok === true && statusBody.planner.configured === false && statusBody.image.configured === false, `dataDir=${statusBody?.dataDir}`)
-  check('status：Key 脱敏字段存在', typeof statusBody?.planner.apiKey === 'string' && typeof statusBody?.image.apiKey === 'string')
+  check('status：未配 Key 时 image.configured=false', statusBody?.ok === true && statusBody.image.configured === false, `dataDir=${statusBody?.dataDir}`)
+  check('status：策划固定走对话（无 API 字段）', statusBody?.planner?.mode === 'chat' && !('apiKey' in (statusBody?.planner ?? {})), JSON.stringify(statusBody?.planner))
+  check('status：Key 脱敏字段存在', typeof statusBody?.image.apiKey === 'string')
   check('status：默认 apiz / 2K / low（低配省钱）', statusBody?.image.provider === 'apiz' && statusBody?.image.outputTier === '2K' && statusBody?.image.quality === 'low', `${statusBody?.image.provider}/${statusBody?.image.outputTier}/${statusBody?.image.quality}`)
   check('status：无 Key 时 keySource=none', statusBody?.image.keySource === 'none', statusBody?.image.keySource)
   check('status：默认强制参考图', statusBody?.image.requireReferenceImages === true)
@@ -110,10 +111,12 @@ try {
   const escaped = await fetch(BASE + '/media?path=' + encodeURIComponent('C:\\Windows\\win.ini'))
   check('media：白名单外路径被拒', escaped.status === 404, String(escaped.status))
 
-  // ---- 策划：未配 Key → agentNeeded 指引
-  const planCreate = await post('/api/plan/create', { listingText: '保温杯 500ml 12小时保温' })
-  const planCreateBody = json(planCreate)
-  check('plan/create 未配 Key：agentNeeded + 自策划指引', planCreate.status === 400 && planCreateBody?.agentNeeded === true && JSON.stringify(planCreateBody.agentGuide).length > 200, String(planCreate.status))
+  // ---- 策划：只出自策划指引（没有策划 API 了）
+  const guideRes = await post('/api/plan/guide', { listingText: '保温杯 500ml 12小时保温', mode: 'listing', listingImageCount: 7 })
+  const guideBody = json(guideRes)
+  check('plan/guide：返回自策划指引', guideRes.status === 200 && guideBody?.agentPlanning?.slots?.length === 7 && !('plannerApiUrl' in guideBody.agentPlanning), `${guideBody?.agentPlanning?.slots?.length} 槽位`)
+  const legacyCreate = await post('/api/plan/create', { listingText: 'x' })
+  check('plan/create 已下线', legacyCreate.status === 404 || legacyCreate.status === 405, String(legacyCreate.status))
 
   // ---- 校验存档
   const validated = await post('/api/validate', { payload: makeListingPayload(7), mode: 'listing', marketplaceId: 'us', listingImageCount: 7 })

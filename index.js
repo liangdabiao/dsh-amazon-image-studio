@@ -13,10 +13,7 @@ export const name = 'amazon-image-studio'
 export const inject = ['webServer', 'skills', 'tools']
 
 export const Config = Schema.object({
-  plannerApiUrl: Schema.string().role('textarea').default('https://api.deepseek.com').description('AI 策划 API URL（OpenAI 兼容；DeepSeek 官方地址会自动切纯文本模式）'),
-  plannerApiKey: Schema.string().default('').description('AI 策划 API Key（留空时策划由当前对话的模型完成，工具会给出指引）'),
-  plannerModel: Schema.string().default('deepseek-v4-flash').description('AI 策划模型（文本模型，如 deepseek-v4-flash / gpt-5.6-terra）'),
-  plannerApiMode: Schema.string().default('chat').description('策划接口：chat（Chat Completions）或 responses（OpenAI Responses）'),
+  // 策划：不再有独立策划 API —— 一律由对话里的模型完成（面板「AI 策划」= 把指引填进对话）
   imageProvider: Schema.string().default('apiz').description('生图服务商（当前只用 apiz / GPT Image 2.5 Flare；volces / openai / aliyun 为兼容保留，面板已隐藏）'),
   imageApiUrl: Schema.string().default('').description('apiz API URL（留空用默认 https://api.apiz.ai）'),
   imageApiKey: Schema.string().default('').description('apiz API Key（sk-…）。面板「设置」页保存的也是这一项；留空且没开「复用本机 apiz CLI 登录态」时不允许生图'),

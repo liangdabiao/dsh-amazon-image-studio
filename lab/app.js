@@ -126,7 +126,7 @@ function renderRailFoot() {
   if (!s) { railFoot.innerHTML = ''; return }
   const dot = (ok, warnWhen) => `<span class="dot ${ok ? 'ok' : warnWhen ? 'warn' : 'bad'}"></span>`
   railFoot.innerHTML = `
-    <div>${dot(s.planner.configured, true)}策划 API：${s.planner.configured ? esc(s.planner.model || '已配置') : '未配置（对话内策划）'}</div>
+    <div>${dot(true, true)}策划：对话内完成（AI 策划 = 填进对话）</div>
     <div>${dot(s.image.configured, false)}生图：apiz · ${s.image.configured ? `${esc(s.image.quality || 'low')} / ${esc(s.image.outputTier || '2K')}` : '未配置（去「设置」填 Key）'}</div>
     <div>${dot(s.image.requireReferenceImages !== false, true)}参考图：${s.image.requireReferenceImages !== false ? '必须上传' : '可不传'}</div>
     <div style="margin-top:6px">v${esc(s.version)} · ${esc(s.dataDir)}</div>`
@@ -176,21 +176,6 @@ function syncModeVisibility() {
   })
 }
 
-function planRequestBody(f) {
-  return {
-    mode: f.mode,
-    marketplaceId: f.marketplaceId,
-    listingImageCount: f.listingImageCount,
-    aplusType: f.aplusType,
-    listingText: f.listingText,
-    productTitle: f.productTitle, brand: f.brand, category: f.category,
-    color: f.color, material: f.material, audience: f.audience,
-    packageIncludes: f.packageIncludes, sellingPoints: f.sellingPoints, forbidden: f.forbidden,
-    referenceImages: refPaths().length ? refPaths() : undefined,
-    tier: f.tier,
-  }
-}
-
 // ---------------------------------------------------------------- 视图：策划台
 
 function renderHome() {
@@ -199,7 +184,6 @@ function renderHome() {
   app.innerHTML = `
   <h2>策划台</h2>
   <div class="sub">粘贴 Listing 文案 → AI 策划逐张方案 → 逐槽位检查 Prompt → 生成（一次一张）。主图白底不挂风格板，附图/A+ 自动挂。</div>
-  ${state.status && !state.status.planner.configured ? `<div class="alert warn">策划 API 未配置：「AI 策划」会把策划指引填进对话，由当前对话的模型完成策划并自动校验存档。也可以在插件设置里配置 plannerApiKey 走独立策划模型。</div>` : ''}
   ${state.status && !state.status.image.configured ? `<div class="alert warn">还没配置 apiz Key：「生成」会被拒绝。去侧栏「设置」页填 Key 并保存（也可以打开「复用本机 apiz CLI 登录态」）。</div>` : ''}
   ${state.status && state.status.image.requireReferenceImages !== false && !state.refs.length ? `<div class="alert warn">先生成不了：本插件要求必须上传产品的实拍/包装/结构图作为参考图（下面「产品参考图」区拖进去即可），避免模型凭空编一个商品。</div>` : ''}
 
@@ -248,7 +232,6 @@ function renderHome() {
     </div>
     <div class="row" style="margin-top:12px">
       <button class="btn primary" id="btn-plan">✨ AI 策划</button>
-      <button class="btn" id="btn-plan-chat">填进对话策划</button>
       <span class="grow"></span>
       <label class="field" style="width:170px">风格板
         <select id="f-style">
@@ -291,8 +274,7 @@ function renderHome() {
   <div id="plan-result"></div>`
 
   document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener('change', () => { state.form.mode = el.value; syncModeVisibility() }))
-  document.getElementById('btn-plan').onclick = runPlanFlow
-  document.getElementById('btn-plan-chat').onclick = planViaChat
+  document.getElementById('btn-plan').onclick = planViaChat
   bindRefUpload()
   document.querySelectorAll('.style-card').forEach((el) => {
     el.addEventListener('click', () => {
@@ -431,68 +413,6 @@ function renderAplusModules() {
   holder.innerHTML = info ? `<div class="row">${info.modules.map((mod) => `<span class="tag" title="${esc(mod.displayLabel)}">${esc(mod.slot)} ${esc(mod.label)} · ${esc(mod.uploadSize)}</span>`).join('')} <span class="hint">默认编排（策划前可在对话里让 agent 用 amz_slots 增删模块，1-${state.meta.maxAPlusModuleCount} 个）</span></div>` : ''
   const sel = document.getElementById('f-aplus')
   if (sel) sel.onchange = () => { state.form.aplusType = sel.value; renderAplusModules() }
-}
-
-async function runPlanFlow() {
-  const f = readForm()
-  if (!f.listingText.trim()) return toast('先粘贴 Listing 文案')
-  const btn = document.getElementById('btn-plan')
-  btn.disabled = true
-  btn.textContent = '策划中…'
-  try {
-    // 不走 post() 的抛错路径：策划接口未配置 Key 时会返回 400 + agentNeeded + agentGuide
-    const raw = await fetch(BASE + '/api/plan/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(planRequestBody(f))
-    })
-    const body = await raw.json()
-    if (!raw.ok || body.ok === false) {
-      if (body.agentNeeded) return handleAgentGuide(body)
-      throw new Error(body.error || `请求失败（${raw.status}）`)
-    }
-    state.plan = body.plan
-    state.composing = {}
-    state.generated = {}
-    renderPlanResult(state.plan)
-    toast('策划完成，逐槽位检查后生成')
-  } catch (err) {
-    toast(String(err.message || err))
-  } finally {
-    btn.disabled = false
-    btn.textContent = '✨ AI 策划'
-  }
-}
-
-function handleAgentGuide(body) {
-  const guide = body.agentGuide ?? {}
-  const slots = guide.slots ?? []
-  const slotsText = Array.isArray(slots) && slots.length && typeof slots[0] === 'object'
-    ? slots.map((s) => `${s.slot}(${s.uploadSize || ''})`).join(', ')
-    : slots.join(', ')
-  const instruction = [
-    '请使用「亚马逊图片工作台」插件为我策划亚马逊商品图片：',
-    `- 工作流：${guide.mode === 'aplus' ? 'A+ 图（' + (guide.aPlusType || '') + '）' : 'Listing 图（' + (guide.listingImageCount || 7) + ' 张）'}`,
-    `- 站点：${guide.marketplace?.label || ''}`,
-    `- 槽位：${slotsText}`,
-    '',
-    'Listing 文案：',
-    readForm().listingText,
-    '',
-    `请按 amz_plan 返回的自策划指引完成逐槽位策划（label/planMarkdown 中文，prompt/negativePrompt 英文，图上文案用${guide.marketplace?.copyLanguage || '站点'}语言），然后用 amz_validate_plan 校验存档，再逐槽位 amz_prompt + amz_generate 生成。`,
-  ].join('\n')
-
-  const holder = document.getElementById('plan-result')
-  if (holder) {
-    holder.innerHTML = `
-    <div class="card">
-      <h3>未配置策划 API —— 改由对话内策划</h3>
-      <div class="hint" style="margin-bottom:8px">点下方按钮把策划指令（含 Listing 文案与槽位表）填进新对话；模型会按插件指引完成策划、校验存档，回到本页在「策划档案」里查看结果。</div>
-      <div class="row"><button class="btn primary" id="btn-fill-chat">开新对话策划 →</button></div>
-    </div>`
-    document.getElementById('btn-fill-chat').onclick = () => startInChat(instruction)
-  }
-  toast('未配置策划 API，可填进对话策划')
 }
 
 function planViaChat() {
@@ -962,7 +882,7 @@ function renderGuide() {
     <h3>标准工作流</h3>
     <ul>
       <li><b>① 查槽位</b>：<code>amz_slots</code> 拿 Listing 槽位表或 A+ 模块编排（可增删模块，1-${m.maxAPlusModuleCount} 个）。</li>
-      <li><b>② AI 策划</b>：<code>amz_plan</code>（配置了策划 Key 直接调模型；未配置返回指引由对话模型策划）→ <code>amz_validate_plan</code> 校验存档拿 planId。</li>
+      <li><b>② AI 策划</b>：<code>amz_plan</code> 返回自策划指引，对话里的模型按指引完成策划 → <code>amz_validate_plan</code> 校验存档拿 planId（**没有策划 API 要配**）。</li>
       <li><b>③ 逐张确认</b>：<code>amz_prompt</code> 组装最终 Prompt（风格块/密度/负面词/守卫/分辨率自动带上），用户过目。</li>
       <li><b>④ 一次一张生成</b>：<code>amz_generate</code>（planId + slot）。<b>必须带产品参考图</b>（风格板不算），没传会被直接拒绝；生图只走 apiz，没在「设置」里配 Key 也不允许生成。</li>
       <li><b>⑤ 打标</b>：需要披露的 AI 人物媒体用 <code>amz_tag_performer</code> 写 XMP。</li>

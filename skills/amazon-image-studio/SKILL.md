@@ -29,10 +29,7 @@ A+ 四套编排（生图换算按模块比例，官方上传尺寸如下）：
 
 给 `amz_plan` 传：`listingText`（粘贴的 Listing 原文）+ 可选参考图 `referenceImages`（实拍/包装/结构图，总负载 ≤8MiB）+ 可选商品事实（productTitle/brand/category/color/material/audience/packageIncludes/sellingPoints/forbidden）+ `mode`/`marketplaceId`/`listingImageCount`/`aplusType`。
 
-**双模式**：
-
-- 插件配置了策划 API Key → `amz_plan` 直接调策划模型，返回严格校验过的策划 JSON（planId）。
-- 没配置 → `amz_plan` 返回 `agentPlanning` 指引（槽位表 + 完整策划指令 + 合规知识）。**你按指引自行策划**，产出符合 schema 的 JSON，然后交给 `amz_validate_plan` 校验存档（校验会查槽位数量与顺序、字段语言规则；通过返回 planId）。校验失败按报错修 JSON 再交。
+**只有一种模式（没有策划 API）**：`amz_plan` 返回 `agentPlanning` 指引（槽位表 + 完整策划指令 + 字段语言规则 + 合规知识 + JSON 形状说明）。**你按指引自行策划**，产出符合 schema 的 JSON，然后交给 `amz_validate_plan` 校验存档（校验会查槽位数量与顺序、字段语言规则；通过返回 planId）。校验失败按报错修 JSON 再交。**不要向用户索要策划 API Key，也不要提议配置策划模型**——策划永远在当前对话里完成。
 
 ### 策划 JSON 的字段规则（两处都强制）
 

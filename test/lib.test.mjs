@@ -36,8 +36,8 @@ const {
 const { calculateImageSize, normalizeSizeTier } = await import('../lib/planner/size.js')
 const { getAmazonMarketplace, formatAmazonListingReferenceMaterial } = await import('../lib/planner/knowledge.js')
 const {
-  createListingPlannerSchema, parsePlannerPayload, isOfficialDeepSeekBaseUrl,
-  normalizeListingPlannerPayload, normalizeAPlusPlannerPayload, extractTextFromSseTextInternal,
+  normalizeListingPlannerPayload, normalizeAPlusPlannerPayload,
+  buildPlannerInstructions, buildChatPlannerSchemaGuide,
 } = await import('../lib/planner/plannerApi.js')
 const { STYLE_PRESETS, loadStylePresetDataUrl, getStylePaletteEntries, buildSelectedVisualStyle, getStylePresetById } = await import('../lib/style.js')
 const {
@@ -308,20 +308,6 @@ await test('站点配置：6 站、日本站允许 CJK、参考材料注入', ()
 
 // ---------------------------------------------------------------- 策划 API 解析
 
-await test('parsePlannerPayload：裸 JSON 与 ```json 围栏', () => {
-  const payload = { a: 1 }
-  assert.deepEqual(parsePlannerPayload(JSON.stringify(payload)), payload)
-  assert.deepEqual(parsePlannerPayload('```json\n{"a":1}\n```'), payload)
-  assert.throws(() => parsePlannerPayload('not json'))
-})
-
-await test('isOfficialDeepSeekBaseUrl：官方地址识别', () => {
-  assert.equal(isOfficialDeepSeekBaseUrl('https://api.deepseek.com'), true)
-  assert.equal(isOfficialDeepSeekBaseUrl('https://api.deepseek.com/v1'), true)
-  assert.equal(isOfficialDeepSeekBaseUrl('https://api.openai.com/v1'), false)
-  assert.equal(isOfficialDeepSeekBaseUrl(''), false)
-})
-
 await test('Listing 策划结果规范化：数量校验 + 字段补全', () => {
   const result = normalizeListingPlannerPayload(makeListingPayload(7), 7, 'us')
   assert.equal(result.plans.length, 7)
@@ -345,25 +331,6 @@ await test('A+ 策划结果规范化：槽位对齐 + 外部文案 + 尺寸换�
   broken.aPlusPlans.pop()
   assert.throws(() => normalizeAPlusPlannerPayload(broken, 'standard-large', '2K', normalizeAPlusModuleSpecs('standard-large'), 'us'), /不是 5 个模块/)
 })
-
-await test('SSE 兜底解析：delta 累积与 completed 优先', () => {
-  const sse = [
-    'data: {"type":"response.output_text.delta","delta":"{\\"a\\":"}',
-    'data: {"type":"response.output_text.delta","delta":"1}"}',
-    '',
-  ].join('\n')
-  assert.equal(extractTextFromSseTextInternal(sse), '{"a":1}')
-  const done = 'data: {"type":"response.completed","response":{"output_text":"final"}}'
-  assert.equal(extractTextFromSseTextInternal(done), 'final')
-})
-
-await test('createListingPlannerSchema：槽位 enum 与必填', () => {
-  const schema = createListingPlannerSchema(7, 'us')
-  assert.deepEqual(schema.properties.imagePlans.items.properties.slot.enum, getAmazonListingImageSlots(7))
-  assert.ok(schema.properties.imagePlans.minItems === 7 && schema.properties.imagePlans.maxItems === 7)
-})
-
-// ---------------------------------------------------------------- 风格系统
 
 await test('风格预设：4 套 + 预设板 PNG 可读 + C1-C6 图例', () => {
   assert.equal(STYLE_PRESETS.length, 4)
@@ -472,7 +439,7 @@ await test('amz_slots 工具：全量输出', async () => {
   assert.equal(data.aplus.modules[0].uploadSize, '600x450')
 })
 
-await test('buildAgentPlanningGuide：未配置时给完整自策划指引', () => {
+await test('buildAgentPlanningGuide：给完整自策划指引（不再有策划 API 字段）', () => {
   configRef.config = {}
   assert.equal(plannerConfigured(), false)
   const guide = buildAgentPlanningGuide({ mode: 'listing', listingImageCount: 7, marketplaceId: 'us' })
@@ -480,15 +447,17 @@ await test('buildAgentPlanningGuide：未配置时给完整自策划指引', () 
   assert.ok(guide.instructions.includes('Amazon image-planning agent'))
   assert.ok(guide.schemaGuide.includes('imagePlans must contain exactly 7'))
   assert.ok(guide.compliance.length >= 4)
+  assert.ok(!('plannerApiUrl' in guide), '策划不再有 API 配置')
 })
 
-await test('amz_plan 未配置：返回 agentPlanning 指引而不是报错', async () => {
-  configRef.config = {}
-  const result = await amzPlanTool.execute({ listingText: 'Stainless steel water bottle, 500ml, 12-hour keep warm…' })
+await test('amz_plan 永远只出指引：就算配置里塞了旧 planner 字段也不发请求', async () => {
+  configRef.config = { plannerApiUrl: 'http://127.0.0.1:1/should-never-be-called', plannerApiKey: 'sk-old' }
+  assert.equal(plannerConfigured(), false, '策划 API 已下线，永远 false')
+  const result = await amzPlanTool.execute({ listingText: 'Stainless steel water bottle, 500ml' })
   assert.equal(result.ok, true)
-  const data = JSON.parse(result.data)
-  assert.ok(data.agentPlanning, '应含自策划指引')
-  assert.ok(!result.data.planId)
+  assert.ok(JSON.parse(result.data).agentPlanning, '应返回自策划指引')
+  assert.ok(!result.data.includes('planId'), '不该产生档案')
+  configRef.config = {}
 })
 
 await test('amz_history 工具：list / remove', async () => {
@@ -498,55 +467,6 @@ await test('amz_history 工具：list / remove', async () => {
   assert.ok(Array.isArray(JSON.parse(result.data).plans))
 })
 
-// ---------------------------------------------------------------- mock 策划 API 全链路
-
-await test('amz_plan + mock Chat Completions：全链路策划存档', async () => {
-  let requestBody = null
-  await withMockServer((req, res) => {
-    let chunks = []
-    req.on('data', (c) => chunks.push(c))
-    req.on('end', () => {
-      requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify(makeListingPayload(7)) } }],
-      }))
-    })
-  }, async (url) => {
-    configRef.config = {
-      plannerApiUrl: url,
-      plannerApiKey: 'sk-test',
-      plannerModel: 'test-planner',
-      plannerApiMode: 'chat',
-      imageApiKey: '',
-      outputTier: '2K',
-    }
-    assert.equal(plannerConfigured(), true)
-    const result = await amzPlanTool.execute({ listingText: '500ml stainless steel bottle…', marketplaceId: 'us' })
-    assert.equal(result.ok, true)
-    const data = JSON.parse(result.data)
-    assert.ok(data.planId)
-    assert.equal(data.slots.length, 7)
-    assert.equal(requestBody.model, 'test-planner')
-    assert.deepEqual(requestBody.response_format, { type: 'json_object' })
-    assert.equal(requestBody.messages[0].role, 'system')
-    assert.ok(requestBody.messages[1].content.includes('500ml stainless steel bottle'))
-    assert.equal(imageConfigured(), false)
-  })
-})
-
-await test('amz_plan 策划 API 失败：降级到自策划指引', async () => {
-  await withMockServer((req, res) => {
-    res.writeHead(401, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ error: { message: 'invalid api key' } }))
-  }, async (url) => {
-    configRef.config = { plannerApiUrl: url, plannerApiKey: 'sk-bad', plannerModel: 'm', plannerApiMode: 'chat', outputTier: '2K' }
-    const result = await amzPlanTool.execute({ listingText: 'bottle' })
-    assert.equal(result.ok, true)
-    assert.ok(JSON.parse(result.data).agentPlanning, '失败应降级到指引')
-    assert.ok(result.summary.includes('401'))
-  })
-})
 
 // ---------------------------------------------------------------- mock 生图 API 全链路
 

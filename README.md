@@ -179,8 +179,8 @@ dsh plugin  --profile web   add  https://github.com/liangdabiao/dsh-amazon-image
 | imageApiUrl | 空 | 留空用 `https://api.apiz.ai` |
 | apizBin | 空 | apiz CLI 路径（参考图换公网 URL 用；留空走 PATH / `APIZ_BIN`） |
 | timeoutSeconds | 600 | apiz 按此上限轮询，**超时不重投**（重投会重复扣费） |
-| plannerApiUrl / plannerApiKey / plannerModel | deepseek / 空 / deepseek-v4-flash | AI 策划 API；**留空 Key = 对话内策划** |
-| plannerApiMode | chat | chat / responses |
+
+> 策划**没有独立 API 配置**：面板上的「✨ AI 策划」就是把策划指令（Listing 文案 + 槽位 + 字段规则）填进新对话，由当前对话的模型完成策划，再回到面板查看档案。
 
 ### 生图通道
 
@@ -200,7 +200,7 @@ dsh plugin  --profile web   add  https://github.com/liangdabiao/dsh-amazon-image
 ## 前置条件
 
 - dsh >= 0.2.1-rc.2，Node 22+
-- AI 策划：策划 API Key（可选；不配则对话内策划）
+- AI 策划：不需要额外 Key —— 由当前对话的模型完成
 - 生图：apiz 可用三种认证之一（插件 imageApiKey / `APIZ_API_KEY` / `apiz auth login`）；其余服务商需自带 Key
 - apiz 通道想用参考图（附图 / A+）：本机需装 apiz CLI（`apiz upload` 换公网 URL）
 
