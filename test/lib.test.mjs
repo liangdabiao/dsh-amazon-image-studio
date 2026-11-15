@@ -48,7 +48,7 @@ const {
 const {
   savePlan, loadPlan, listPlans, removePlan, addHistoryRecord, readHistory,
   removeHistoryRecord, clearHistory, saveImage, fileExists, DATA_DIR,
-  saveReference, listReferences, removeReference,
+  saveReference, listReferences, removeReference, planImages,
 } = await import('../lib/data.js')
 const {
   verifySyntheticPerformerTag, tagSyntheticPerformerBytes, checkSyntheticPerformerBytes,
@@ -377,6 +377,30 @@ await test('PNG 打标 roundtrip + 已打标检测', () => {
 })
 
 // ---------------------------------------------------------------- 数据层
+
+await test('策划档案列表：带五点卖点 / 封面 / 已生成数（面板要用）', () => {
+  clearHistory()
+  const archive = runValidatePlan({ payload: makeListingPayload(7), mode: 'listing', marketplaceId: 'us' })
+  const before = listPlans().find((p) => p.id === archive.id)
+  assert.equal(before.bullets.length, 3, '五点卖点要带进列表')
+  assert.equal(before.generatedCount, 0)
+  assert.equal(before.cover, null)
+
+  const file = saveImage(Buffer.from(ONE_PX_PNG_BASE64, 'base64'), 'png')
+  addHistoryRecord({ id: 'gen-cover', kind: 'generate', planId: archive.id, slot: 'MAIN', file, createdAt: new Date().toISOString() })
+  const withImage = listPlans().find((p) => p.id === archive.id)
+  assert.equal(withImage.generatedCount, 1)
+  assert.equal(withImage.cover, file)
+
+  const images = planImages(archive.id)
+  assert.equal(images.length, 1)
+  assert.equal(images[0].slot, 'MAIN')
+  assert.equal(images[0].exists, true)
+  assert.equal(planImages('plan-not-exist').length, 0)
+
+  clearHistory()
+  removePlan(archive.id)
+})
 
 await test('数据层：策划档案存取/列表/删除 + 原子历史', () => {
   const payload = makeListingPayload(7)

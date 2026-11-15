@@ -17,7 +17,7 @@ process.env.APIZ_BIN = join(ROOT, 'no-such-apiz-bin')
 
 const { registerApi } = await import('../lib/api.js')
 const { getAmazonListingImageSlots } = await import('../lib/planner/slots.js')
-const { DATA_DIR, readHistory, listPlans, listReferences } = await import('../lib/data.js')
+const { DATA_DIR, readHistory, listPlans, listReferences, addHistoryRecord, clearHistory, saveImage } = await import('../lib/data.js')
 const { configRef } = await import('../lib/tools.js')
 
 // 未配置 Key：策划走 agentNeeded、生图报错，正好覆盖兜底分支
@@ -134,6 +134,17 @@ try {
   check('plans：档案已列出', plans?.ok === true && plans.plans.length >= 1 && plans.plans[0].slotCount === 7, `count=${plans?.plans?.length}`)
   const detail = json(await get('/api/plan?id=' + encodeURIComponent(planId)))
   check('plan 详情：含 7 个槽位', detail?.ok === true && detail.plan.plans.length === 7, `${detail?.plan?.plans?.length}`)
+  check('plan 详情：带成品图数组（无图时为空）', Array.isArray(detail?.images) && detail.images.length === 0, `${detail?.images?.length}`)
+  check('plans 列表：带五点卖点与已生成数', plans.plans[0].bullets.length === 3 && plans.plans[0].generatedCount === 0 && plans.plans[0].cover === null, `bullets=${plans.plans[0].bullets.length}`)
+  // 造一条成品图记录 → 详情与列表都要能带出来（面板「策划档案」靠这个显示封面/成品图）
+  const genFile = saveImage(Buffer.from('fake-png-bytes'), 'png')
+  addHistoryRecord({ id: 'gen-api-test', kind: 'generate', planId, slot: 'MAIN', file: genFile, createdAt: new Date().toISOString(), actualSize: '2048x2048' })
+  const detailWithImage = json(await get('/api/plan?id=' + encodeURIComponent(planId)))
+  check('plan 详情：成品图带可预览 URL', detailWithImage?.images?.length === 1 && /^\/amazon-image-studio\/media\?path=/.test(detailWithImage.images[0].url) && detailWithImage.images[0].exists === true, detailWithImage?.images?.[0]?.slot)
+  const plansWithImage = json(await get('/api/plans'))
+  const row = plansWithImage.plans.find((p) => p.id === planId)
+  check('plans 列表：封面与已生成数同步', row.cover === genFile && row.generatedCount === 1, `cover=${row?.cover ? '有' : '无'}`)
+  clearHistory()
   const missing = await get('/api/plan?id=nope')
   check('plan 详情：不存在 404', missing.status === 404, String(missing.status))
 

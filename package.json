@@ -41,6 +41,7 @@
     "selftest": "node scripts/selftest.mjs",
     "api-test": "node scripts/api-test.mjs",
     "client-smoke": "node scripts/client-smoke.mjs",
+    "panel-check": "node scripts/panel-check.mjs",
     "verify": "node test/lib.test.mjs && node scripts/selftest.mjs && node scripts/api-test.mjs && node scripts/client-smoke.mjs",
     "sandbox": "bash scripts/dev-sandbox.sh"
   },

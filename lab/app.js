@@ -491,6 +491,8 @@ function renderPlanResult(plan) {
   }
   document.querySelectorAll('.slot-card').forEach((card) => {
     const slot = card.dataset.slot
+    // 这里必须按槽位取回条目：以前直接用了外层 map 的变量，整个渲染会抛 ReferenceError
+    const entry = slots.find((item) => item.slot === slot) ?? {}
     card.querySelector('.slot-head').onclick = () => card.classList.toggle('open')
     card.querySelector('[data-act="copy"]').onclick = async () => {
       const composed = await composeSlot(slot)
@@ -592,44 +594,158 @@ function slotCardHtml(entry, index) {
 function renderPlans() {
   app.innerHTML = `
   <h2>策划档案</h2>
-  <div class="sub">AI 策划与对话内策划的存档；点开可恢复到策划台继续逐张生成。</div>
+  <div class="sub">AI 策划与对话内策划的存档；点开可看这套方案的卖点、逐槽位策划说明与已生成的成品图。</div>
   <div id="plans-list"></div>`
   const holder = document.getElementById('plans-list')
   if (!state.plans.length) { holder.innerHTML = '<div class="hint">还没有策划档案，去「策划台」发起 AI 策划。</div>'; return }
   holder.innerHTML = state.plans.map((p) => `
-    <div class="list-item">
-      <div style="min-width:0">
+    <div class="plan-card">
+      ${p.cover
+        ? `<img class="plan-cover" src="${mediaUrl(p.cover)}" data-file="${esc(p.cover)}" alt="封面" loading="lazy">`
+        : '<div class="plan-cover plan-cover-empty">无图</div>'}
+      <div class="plan-main">
         <div class="title">${esc(p.title || '未命名商品')}</div>
-        <div class="meta">${p.mode === 'aplus' ? 'A+' : 'Listing'} · ${p.slotCount} 个槽位 · ${esc(p.marketplaceId)} · ${shortTime(p.updatedAt)} · ${esc(p.id)}</div>
+        <div class="meta">${p.mode === 'aplus' ? `A+ · ${esc(p.aPlusType ?? '')}` : 'Listing'} · ${p.slotCount} 个槽位 · ${esc(p.marketplaceId)}${p.tier ? ` · ${esc(p.tier)}` : ''} · ${shortTime(p.updatedAt)}</div>
+        ${p.bullets?.length ? `<ul class="plan-bullets">${p.bullets.slice(0, 5).map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : '<div class="hint">这套档案没有记录卖点（五点描述）</div>'}
+        <div class="meta">已生成 <b>${p.generatedCount}</b> 张 · ${esc(p.id)}</div>
       </div>
-      <span class="grow"></span>
-      <button class="btn small" data-act="open" data-id="${esc(p.id)}">打开</button>
-      <button class="btn small ghost" data-act="del" data-id="${esc(p.id)}">删除</button>
+      <div class="plan-actions">
+        <button class="btn small" data-act="detail" data-id="${esc(p.id)}">查看详情</button>
+        <button class="btn small" data-act="open" data-id="${esc(p.id)}">在策划台打开</button>
+        <button class="btn small ghost" data-act="del" data-id="${esc(p.id)}">删除</button>
+      </div>
     </div>`).join('')
+
+  holder.querySelectorAll('.plan-cover').forEach((img) => {
+    if (img.classList.contains('plan-cover-empty')) return
+    img.onclick = () => openViewer('封面', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    img.onerror = () => { img.outerHTML = '<div class="plan-cover plan-cover-empty">文件已丢失</div>' }
+  })
+  holder.querySelectorAll('[data-act="detail"]').forEach((btn) => {
+    btn.onclick = () => { location.hash = `#/plans/${encodeURIComponent(btn.dataset.id)}` }
+  })
   holder.querySelectorAll('[data-act="open"]').forEach((btn) => {
     btn.onclick = async () => {
-      const r = await api(`/api/plan?id=${encodeURIComponent(btn.dataset.id)}`)
-      state.plan = r.plan
-      state.composing = {}
-      state.generated = {}
-      state.form.mode = r.plan.mode
-      if (r.plan.marketplaceId) state.form.marketplaceId = r.plan.marketplaceId
-      if (r.plan.listingImageCount) state.form.listingImageCount = r.plan.listingImageCount
-      if (r.plan.aPlusType) state.form.aplusType = r.plan.aPlusType
-      if (r.plan.stylePresetId) state.form.stylePresetId = r.plan.stylePresetId
-      location.hash = '#/'
-      renderHome()
-      writeForm()
-      renderPlanResult(r.plan)
+      try {
+        const r = await api(`/api/plan?id=${encodeURIComponent(btn.dataset.id)}`)
+        applyPlanToForm(r.plan)
+        location.hash = '#/'
+      } catch (err) {
+        toast(`打开失败：${String(err.message || err)}`)
+      }
     }
   })
   holder.querySelectorAll('[data-act="del"]').forEach((btn) => {
     btn.onclick = async () => {
-      await post('/api/plans/remove', { id: btn.dataset.id })
-      await loadPlans()
-      renderPlans()
-      toast('已删除')
+      try {
+        await post('/api/plans/remove', { id: btn.dataset.id })
+        if (state.plan?.id === btn.dataset.id) state.plan = null
+        await Promise.all([loadPlans(), loadHistory()])
+        renderPlans()
+        toast('已删除')
+      } catch (err) {
+        toast(`删除失败：${String(err.message || err)}`)
+      }
     }
+  })
+}
+
+/** 把档案恢复到策划台表单（mode/站点/张数/A+类型/风格/档位/文案）。 */
+function applyPlanToForm(plan) {
+  state.plan = plan
+  state.composing = {}
+  state.generated = {}
+  state.form.mode = plan.mode
+  if (plan.marketplaceId) state.form.marketplaceId = plan.marketplaceId
+  if (plan.listingImageCount) state.form.listingImageCount = plan.listingImageCount
+  if (plan.plans?.length) state.form.listingImageCount = plan.plans.length
+  if (plan.aPlusType) state.form.aPlusType = plan.aPlusType
+  if (plan.stylePresetId) state.form.stylePresetId = plan.stylePresetId
+  if (plan.tier) state.form.tier = plan.tier
+  if (plan.listingText) state.form.listingText = plan.listingText
+  for (const key of ['productTitle', 'brand', 'category', 'color', 'material', 'audience', 'packageIncludes', 'sellingPoints']) {
+    const value = plan.draft?.[key]
+    if (typeof value === 'string' && value) state.form[key] = value
+  }
+}
+
+// ---------------------------------------------------------------- 视图：策划档案详情
+
+async function renderPlanDetail(planId) {
+  app.innerHTML = '<div class="loading">读取档案…</div>'
+  let data
+  try {
+    data = await api(`/api/plan?id=${encodeURIComponent(planId)}`)
+  } catch (err) {
+    app.innerHTML = `<div class="alert bad">读取档案失败：${esc(String(err.message || err))}</div><div class="row"><button class="btn" id="back-plans">返回档案列表</button></div>`
+    document.getElementById('back-plans').onclick = () => { location.hash = '#/plans' }
+    return
+  }
+  const plan = data.plan
+  const slots = slotList(plan)
+  const images = data.images ?? []
+  const imageBySlot = new Map()
+  for (const item of images) if (item.slot && !imageBySlot.has(item.slot)) imageBySlot.set(item.slot, item)
+  const marketplace = state.meta?.marketplaces?.find((x) => x.id === plan.marketplaceId)
+
+  app.innerHTML = `
+  <div class="row" style="margin-bottom:6px">
+    <button class="btn small ghost" id="back-plans">← 档案列表</button>
+    <span class="grow"></span>
+    <button class="btn small" id="open-in-studio">在策划台打开</button>
+  </div>
+  <h2>${esc(plan.parsed?.title || '未命名商品')}</h2>
+  <div class="sub">${plan.mode === 'aplus' ? `A+ 图 · ${esc(plan.aPlusType ?? '')}` : 'Listing 图'} · ${esc(marketplace?.label ?? plan.marketplaceId ?? '')} · ${slots.length} 个槽位${plan.tier ? ` · ${esc(plan.tier)} 档` : ''} · 更新于 ${shortTime(plan.updatedAt)}</div>
+
+  <div class="card">
+    <h3>五点卖点（策划依据）</h3>
+    ${plan.parsed?.bullets?.length
+      ? `<ol class="plan-bullets">${plan.parsed.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ol>`
+      : '<div class="hint">这套档案没有记录卖点：当时提交策划 JSON 时没给 sellingPoints。</div>'}
+    ${plan.listingText ? `<details style="margin-top:8px"><summary class="hint">当时的 Listing 文案</summary><pre class="plain">${esc(plan.listingText)}</pre></details>` : ''}
+  </div>
+
+  <div class="card">
+    <h3>成品图（${images.length} 张）</h3>
+    ${images.length
+      ? `<div class="gen-grid">${images.map((item) => `
+        <figure class="gen-cell">
+          ${item.exists
+            ? `<img src="${mediaUrl(item.file)}" data-file="${esc(item.file)}" alt="${esc(item.slot ?? '')}" loading="lazy">`
+            : '<div class="gen-missing">文件已丢失</div>'}
+          <figcaption>${esc(item.slot ?? '自由生成')} · ${esc(item.actualSize ?? item.generationSize ?? '')}${item.quality ? ` · ${esc(item.quality)}` : ''}</figcaption>
+        </figure>`).join('')}</div>`
+      : '<div class="hint">这套档案还没有生成过图。</div>'}
+  </div>
+
+  <div class="card">
+    <h3>逐槽位策划</h3>
+    ${slots.map((entry) => {
+      const image = imageBySlot.get(entry.slot)
+      return `
+      <div class="plan-slot">
+        <div class="row">
+          <b>${esc(entry.slot)}</b>
+          <span class="hint">${esc(entry.label ?? '')}</span>
+          ${entry.moduleType ? `<span class="tag">${esc(entry.moduleType)} · ${esc(entry.uploadSize ?? '')}</span>` : ''}
+          <span class="grow"></span>
+          ${image?.exists ? `<button class="btn small ghost" data-img="${esc(image.file)}">看这张图</button>` : ''}
+        </div>
+        <div class="slot-plan">${esc(entry.planMarkdown ?? '')}</div>
+        ${entry.textTitle || entry.textBody ? `<div class="hint">A+ 外部文案：${esc(entry.textTitle ?? '')}${entry.textBody ? ' — ' + esc(entry.textBody) : ''}</div>` : ''}
+        <details><summary class="hint">英文生图 Prompt</summary><div class="slot-prompt">${esc(entry.prompt ?? '')}</div></details>
+      </div>`
+    }).join('')}
+  </div>`
+
+  document.getElementById('back-plans').onclick = () => { location.hash = '#/plans' }
+  document.getElementById('open-in-studio').onclick = () => { applyPlanToForm(plan); location.hash = '#/' }
+  app.querySelectorAll('[data-img]').forEach((btn) => {
+    btn.onclick = () => openViewer('成品图', `<img src="${mediaUrl(btn.dataset.img)}">`, mediaUrl(btn.dataset.img))
+  })
+  app.querySelectorAll('.gen-cell img').forEach((img) => {
+    img.onclick = () => openViewer('成品图', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    img.onerror = () => { img.outerHTML = '<div class="gen-missing">文件已丢失</div>' }
   })
 }
 
@@ -647,8 +763,8 @@ function renderGallery() {
     <div class="list-item">
       <img class="thumb" src="${mediaUrl(r.file)}" data-file="${esc(r.file)}" loading="lazy">
       <div style="min-width:0">
-        <div class="title">${esc(r.slot ?? '自由生成')} <span class="tag">${esc(r.provider)}/${esc(r.model ?? '')}</span></div>
-        <div class="meta">${esc(r.generationSize ?? '')} · ${esc(r.planId ?? '')} · ${shortTime(r.createdAt)}</div>
+        <div class="title">${esc(r.slot ?? '自由生成')} <span class="tag">${esc(r.provider)}/${esc(r.model ?? '')}</span>${r.quality ? `<span class="tag">${esc(r.quality)}</span>` : ''}</div>
+        <div class="meta">${esc(r.actualSize ?? r.generationSize ?? '')}${r.generationSize && r.actualSize && r.actualSize !== r.generationSize ? `（要 ${esc(r.generationSize)}）` : ''}${r.price != null ? ` · ${r.price} 积分` : ''} · ${r.referenceCount ? `参考图 ${r.referenceCount} 张` : '无参考图'}${r.planId ? ` · 档案 <a href="#/plans/${encodeURIComponent(r.planId)}">${esc(r.planId)}</a>` : ''} · ${shortTime(r.createdAt)}</div>
         <div class="meta" style="max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((r.prompt ?? '').slice(0, 160))}</div>
       </div>
       <span class="grow"></span>
@@ -657,7 +773,9 @@ function renderGallery() {
       <button class="btn small ghost" data-act="del" data-id="${esc(r.id)}">删除</button>
     </div>`).join('')
   holder.querySelectorAll('img.thumb').forEach((img) => {
-    img.onclick = (e) => openViewer('生成结果', `<img src="${mediaUrl(e.currentTarget.dataset.file)}">`, mediaUrl(e.currentTarget.dataset.file))
+    img.onclick = () => openViewer('生成结果', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    // 早期版本 outputPath 不落盘的记录会指向不存在的文件：显示占位而不是坏图
+    img.onerror = () => { img.outerHTML = '<div class="thumb thumb-missing">文件已丢失</div>' }
   })
   holder.querySelectorAll('[data-act="copy"]').forEach((btn) => {
     btn.onclick = () => {
@@ -803,7 +921,7 @@ async function renderSettings() {
   <div class="card">
     <h3>apiz 认证</h3>
     <div class="alert info" style="margin-bottom:10px">
-      还没有 Key？去 <a href="https://apiz.ai" target="_blank" rel="noreferrer">apiz.ai</a> 注册 / 登录 → 控制台「API Keys」→ 新建 → 复制 <code>sk-</code> 开头的那串，粘贴到下面保存。
+      还没有 Key？去 <a href="https://apiz.ai/#/?ref=IP98Q1ZX" target="_blank" rel="noreferrer">apiz.ai</a> 注册 / 登录 → 控制台「API Keys」→ 新建 → 复制 <code>sk-</code> 开头的那串，粘贴到下面保存。
       <div class="hint" style="margin-top:4px">按 token 计费（100 积分 = ¥1），用多少扣多少；质量档位越低越便宜。</div>
     </div>
     <div class="row" style="gap:10px">
@@ -939,11 +1057,36 @@ function renderGuide() {
 const routes = { home: renderHome, plans: renderPlans, gallery: renderGallery, tagging: renderTagging, settings: renderSettings, guide: renderGuide }
 
 function route() {
-  const view = (location.hash.replace(/^#\//, '') || 'home').split('?')[0]
+  const raw = location.hash.replace(/^#\//, '') || 'home'
+  const [path] = raw.split('?')
+  const [view, ...rest] = path.split('/')
   for (const el of document.querySelectorAll('.nav a')) {
     el.classList.toggle('active', el.dataset.view === view)
   }
-  ;(routes[view] ?? renderHome)()
+  void navigate(view, rest)
+}
+
+/**
+ * 每次切页都重新拉数据：以前只在 boot 时加载一次，导致刚生成的图 / 刚建的档案
+ * 不刷新就不出现（看起来像「历史缺失」）。
+ */
+async function navigate(view, rest = []) {
+  try {
+    if (view === 'plans' && rest.length) {
+      await renderPlanDetail(decodeURIComponent(rest.join('/')))
+      return
+    }
+    if (view === 'plans') { await loadPlans(); renderPlans(); return }
+    if (view === 'gallery') { await loadHistory(); renderGallery(); return }
+    if (view === 'home') {
+      await Promise.all([loadStatus(), loadPlans(), loadHistory()])
+      renderHome()
+      return
+    }
+    ;(routes[view] ?? renderHome)()
+  } catch (err) {
+    app.innerHTML = `<div class="alert bad">加载失败：${esc(String(err.message || err))}</div>`
+  }
 }
 
 addEventListener('hashchange', route)

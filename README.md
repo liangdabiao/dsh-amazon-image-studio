@@ -209,8 +209,9 @@ dsh plugin  --profile web   add  https://github.com/liangdabiao/dsh-amazon-image
 ```bash
 npm test          # 45 个离线单测（含 mock 策划/生图 API 全链路、apiz 异步任务、尺寸吸附）
 npm run selftest  # 随包资产 / skill provider / 引擎关键路径自检
-npm run api-test  # 把 registerApi 挂到本地 http 服务，真实 fetch 打全部接口（56 项）
+npm run api-test  # 把 registerApi 挂到本地 http 服务，真实 fetch 打全部接口（62 项）
 npm run client-smoke  # 客户端模块冒烟：模块加载器 / 两个 slot / 主题订阅
+npm run panel-check   # 无头浏览器真渲染面板：策划档案/档案详情/生成历史的内容、图片、点击（16 项，无 playwright 自动跳过）
 npm run verify    # 上面四件套一起跑
 node scripts/apiz-live-test.mjs --yes  # 真机冒烟（1024² + low，约 19 积分；不加 --yes 不执行）
 npm run sandbox   # 隔离沙盒起真宿主（/tmp 或 %TEMP% 下 dsh-smoke-home）
