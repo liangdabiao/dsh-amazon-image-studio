@@ -104,6 +104,8 @@ textarea.tall { min-height: 120px; }
 .alert.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .alert.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: color-mix(in srgb, var(--bad) 8%, transparent); }
 .alert.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.alert.info { color: var(--ink-soft); border-color: var(--line); background: var(--bg-hover); }
+.alert.info a { color: var(--accent); font-weight: 600; }
 
 /* ---------------- 槽位卡 ---------------- */
 .slot-card { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
@@ -148,6 +150,12 @@ textarea.tall { min-height: 120px; }
   color: var(--ink-soft); cursor: pointer; margin-bottom: 12px;
 }
 .dropzone.drag { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone.need { border-color: var(--bad); background: rgba(194, 55, 47, 0.08); animation: ref-nudge 0.55s ease-in-out 2; }
+@keyframes ref-nudge {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
 .tag-file { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .tag-file .st { margin-left: auto; font-size: 11.5px; }
 .st.ok { color: var(--ok); } .st.warn { color: var(--warn); } .st.bad { color: var(--bad); }

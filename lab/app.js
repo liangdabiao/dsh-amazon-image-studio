@@ -185,7 +185,6 @@ function renderHome() {
   <h2>策划台</h2>
   <div class="sub">粘贴 Listing 文案 → AI 策划逐张方案 → 逐槽位检查 Prompt → 生成（一次一张）。主图白底不挂风格板，附图/A+ 自动挂。</div>
   ${state.status && !state.status.image.configured ? `<div class="alert warn">还没配置 apiz Key：「生成」会被拒绝。去侧栏「设置」页填 Key 并保存（也可以打开「复用本机 apiz CLI 登录态」）。</div>` : ''}
-  ${state.status && state.status.image.requireReferenceImages !== false && !state.refs.length ? `<div class="alert warn">先生成不了：本插件要求必须上传产品的实拍/包装/结构图作为参考图（下面「产品参考图」区拖进去即可），避免模型凭空编一个商品。</div>` : ''}
 
   <div class="card">
     <div class="row" style="margin-bottom:12px">
@@ -366,8 +365,16 @@ async function uploadRefs(files) {
   }
 }
 
-function renderRefList() {
-  const list = document.getElementById('ref-list')
+/** 用户点「生成」却被拦时，把上传区闪一下并滚到视野里，别让他到处找。 */
+function highlightRefDropzone() {
+  const zone = document.getElementById('ref-dropzone')
+  if (!zone) return
+  zone.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  zone.classList.add('need')
+  setTimeout(() => zone.classList.remove('need'), 1600)
+}
+
+function renderRefList() {  const list = document.getElementById('ref-list')
   const summary = document.getElementById('ref-summary')
   if (summary) summary.textContent = state.refs.length ? `${state.refs.length} 张（生成时会一起传给模型）` : '未上传'
   if (!list) return
@@ -496,10 +503,15 @@ function renderPlanResult(plan) {
     }
     const genBtn = card.querySelector('[data-act="generate"]')
     genBtn.onclick = async () => {
-      // 硬门槛：没有产品参考图不让生成（与宿主侧同一规则）
-      if (!refPaths().length) {
-        toast('先上传产品参考图再生成（设置里可关 requireReferenceImages，但不建议）')
-        document.getElementById('ref-dropzone')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // 点下去才查：先查 Key，再查产品参考图（与宿主侧同一套规则）
+      if (state.status && state.status.image && state.status.image.configured === false) {
+        toast('还没配置 apiz Key：去侧栏「设置」填 Key 或打开「复用本机 apiz CLI 登录态」')
+        location.hash = '#/settings'
+        return
+      }
+      if (!refPaths().length && state.status?.image?.requireReferenceImages !== false) {
+        toast('这张图需要产品参考图：在策划台的「产品参考图」区拖入实拍/包装/结构图（1-4 张即可）')
+        highlightRefDropzone()
         return
       }
       genBtn.disabled = true
@@ -790,6 +802,10 @@ async function renderSettings() {
 
   <div class="card">
     <h3>apiz 认证</h3>
+    <div class="alert info" style="margin-bottom:10px">
+      还没有 Key？去 <a href="https://apiz.ai" target="_blank" rel="noreferrer">apiz.ai</a> 注册 / 登录 → 控制台「API Keys」→ 新建 → 复制 <code>sk-</code> 开头的那串，粘贴到下面保存。
+      <div class="hint" style="margin-top:4px">按 token 计费（100 积分 = ¥1），用多少扣多少；质量档位越低越便宜。</div>
+    </div>
     <div class="row" style="gap:10px">
       <div class="row" style="gap:6px"><span class="dot ${s.keySource === 'none' ? 'bad' : 'ok'}"></span>当前 Key 来源：<b>${esc(KEY_SOURCE_LABELS[s.keySource] ?? s.keySource)}</b></div>
       <span class="grow"></span>
