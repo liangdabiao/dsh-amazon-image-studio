@@ -50,6 +50,8 @@ const shortTime = (iso) => {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 const mediaUrl = (abs) => `${BASE}/media?path=${encodeURIComponent(abs)}`
+/** 带 download=1 的地址：服务端会回 Content-Disposition: attachment，点了就是真下载。 */
+const downloadUrl = (abs) => `${BASE}/media?path=${encodeURIComponent(abs)}&download=1`
 
 async function api(path, opts) {
   const res = await fetch(BASE + path, opts)
@@ -93,11 +95,14 @@ function startInChat(prompt) {
   parent.postMessage({ type: 'amazon-image-studio:start', prompt }, location.origin)
 }
 
-function openViewer(title, bodyHtml, copyValue) {
+function openViewer(title, bodyHtml, copyValue, downloadHref) {
   viewerTitle.textContent = title
   viewerBody.innerHTML = bodyHtml
   viewerCopy.hidden = !copyValue
   if (copyValue) viewerCopy.onclick = () => copyText(copyValue)
+  const downloadBtn = document.getElementById('viewer-download')
+  downloadBtn.hidden = !downloadHref
+  if (downloadHref) downloadBtn.onclick = () => { location.href = downloadHref }
   viewer.hidden = false
 }
 function closeViewer() { viewer.hidden = true }
@@ -398,7 +403,7 @@ function renderRefList() {  const list = document.getElementById('ref-list')
       const card = img.closest('.ref-card')
       const item = state.refs.find((r) => r.path === card?.dataset.path)
       if (!item) return
-      openViewer(item.name || '参考图', `<img src="${mediaUrl(item.path)}">`, mediaUrl(item.path))
+      openViewer(item.name || '参考图', `<img src="${mediaUrl(item.path)}">`, mediaUrl(item.path), downloadUrl(item.path))
     }
   })
 }
@@ -531,8 +536,8 @@ function renderPlanResult(plan) {
         })
         state.generated[slot] = result
         const status = card.querySelector('[data-act-status]')
-        status.innerHTML = `<img src="${mediaUrl(result.file)}" alt="生成结果" data-file="${esc(result.file)}">`
-        status.querySelector('img').onclick = (e) => openViewer(`${slot} 生成结果`, `<img src="${mediaUrl(e.currentTarget.dataset.file)}">`, mediaUrl(e.currentTarget.dataset.file))
+        status.innerHTML = `<img src="${mediaUrl(result.file)}" alt="生成结果" data-file="${esc(result.file)}"><a class="btn small" href="${downloadUrl(result.file)}" download>下载这张</a>`
+        status.querySelector('img').onclick = (e) => openViewer(`${slot} 生成结果`, `<img src="${mediaUrl(e.currentTarget.dataset.file)}">`, mediaUrl(e.currentTarget.dataset.file), downloadUrl(e.currentTarget.dataset.file))
         genBtn.textContent = '重新生成'
       } catch (err) {
         toast(String(err.message || err))
@@ -618,7 +623,7 @@ function renderPlans() {
 
   holder.querySelectorAll('.plan-cover').forEach((img) => {
     if (img.classList.contains('plan-cover-empty')) return
-    img.onclick = () => openViewer('封面', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    img.onclick = () => openViewer('封面', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file), downloadUrl(img.dataset.file))
     img.onerror = () => { img.outerHTML = '<div class="plan-cover plan-cover-empty">文件已丢失</div>' }
   })
   holder.querySelectorAll('[data-act="detail"]').forEach((btn) => {
@@ -713,7 +718,7 @@ async function renderPlanDetail(planId) {
           ${item.exists
             ? `<img src="${mediaUrl(item.file)}" data-file="${esc(item.file)}" alt="${esc(item.slot ?? '')}" loading="lazy">`
             : '<div class="gen-missing">文件已丢失</div>'}
-          <figcaption>${esc(item.slot ?? '自由生成')} · ${esc(item.actualSize ?? item.generationSize ?? '')}${item.quality ? ` · ${esc(item.quality)}` : ''}</figcaption>
+          <figcaption>${esc(item.slot ?? '自由生成')} · ${esc(item.actualSize ?? item.generationSize ?? '')}${item.quality ? ` · ${esc(item.quality)}` : ''}${item.exists ? ` · <a href="${downloadUrl(item.file)}" download>下载</a>` : ''}</figcaption>
         </figure>`).join('')}</div>`
       : '<div class="hint">这套档案还没有生成过图。</div>'}
   </div>
@@ -741,10 +746,10 @@ async function renderPlanDetail(planId) {
   document.getElementById('back-plans').onclick = () => { location.hash = '#/plans' }
   document.getElementById('open-in-studio').onclick = () => { applyPlanToForm(plan); location.hash = '#/' }
   app.querySelectorAll('[data-img]').forEach((btn) => {
-    btn.onclick = () => openViewer('成品图', `<img src="${mediaUrl(btn.dataset.img)}">`, mediaUrl(btn.dataset.img))
+    btn.onclick = () => openViewer('成品图', `<img src="${mediaUrl(btn.dataset.img)}">`, mediaUrl(btn.dataset.img), downloadUrl(btn.dataset.img))
   })
   app.querySelectorAll('.gen-cell img').forEach((img) => {
-    img.onclick = () => openViewer('成品图', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    img.onclick = () => openViewer('成品图', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file), downloadUrl(img.dataset.file))
     img.onerror = () => { img.outerHTML = '<div class="gen-missing">文件已丢失</div>' }
   })
 }
@@ -769,11 +774,12 @@ function renderGallery() {
       </div>
       <span class="grow"></span>
       <button class="btn small" data-act="copy" data-id="${esc(r.id)}">复制 Prompt</button>
+      <a class="btn small" href="${downloadUrl(r.file)}" download>下载</a>
       <button class="btn small" data-act="regen" data-id="${esc(r.id)}">填进对话重生成</button>
       <button class="btn small ghost" data-act="del" data-id="${esc(r.id)}">删除</button>
     </div>`).join('')
   holder.querySelectorAll('img.thumb').forEach((img) => {
-    img.onclick = () => openViewer('生成结果', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file))
+    img.onclick = () => openViewer('生成结果', `<img src="${mediaUrl(img.dataset.file)}">`, mediaUrl(img.dataset.file), downloadUrl(img.dataset.file))
     // 早期版本 outputPath 不落盘的记录会指向不存在的文件：显示占位而不是坏图
     img.onerror = () => { img.outerHTML = '<div class="thumb thumb-missing">文件已丢失</div>' }
   })

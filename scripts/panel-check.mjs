@@ -116,6 +116,7 @@ check('档案详情：路由进入 #/plans/<id>', page.url().includes(`#/plans/$
 check('档案详情：五点卖点', await page.locator('.card').first().locator('.plan-bullets li').count() === 5)
 check('档案详情：成品图 2 张', await page.locator('.gen-cell img').count() === 2)
 check('档案详情：成品图加载', await page.evaluate(() => [...document.querySelectorAll('.gen-cell img')].every((i) => i.complete && i.naturalWidth > 0)))
+check('档案详情：每张成品图都有下载链接', await page.locator('.gen-cell figcaption a[download]').count() === 2)
 check('档案详情：逐槽位策划 7 行', await page.locator('.plan-slot').count() === 7)
 const imgBtn = page.locator('[data-img]').first()
 const wantName = (await imgBtn.getAttribute('data-img')).split(/[\\/]/).pop()
@@ -140,6 +141,13 @@ await page.waitForTimeout(400)
 check('生成历史：两条记录', await page.locator('#history-list .list-item').count() === 2)
 check('生成历史：缩略图加载', await page.evaluate(() => [...document.querySelectorAll('#history-list img.thumb')].every((i) => i.complete && i.naturalWidth > 0)))
 check('生成历史：显示积分与实际尺寸', (await page.locator('#history-list .list-item').first().textContent()).includes('21 积分'))
+check('生成历史：有下载按钮', await page.locator('#history-list a[download]').count() === 2)
+// 真点一次下载，标题要落在图片文件名上（说明服务端回了 attachment）
+const [download] = await Promise.all([
+  page.waitForEvent('download', { timeout: 20000 }),
+  page.locator('#history-list a[download]').first().click(),
+])
+check('生成历史：点下载真的触发下载', /\.png$/.test(download.suggestedFilename()), download.suggestedFilename())
 await page.screenshot({ path: join(SHOTS, 'gallery.png'), fullPage: true })
 
 check('页面无 JS 报错', errors.length === 0, errors.slice(0, 3).join(' | '))

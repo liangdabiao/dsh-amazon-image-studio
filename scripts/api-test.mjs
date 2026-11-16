@@ -110,6 +110,12 @@ try {
   check('media：风格预设板 PNG 可读', presetRes.status === 200 && (presetRes.headers.get('content-type') || '').includes('png'), `${presetRes.status}`)
   const escaped = await fetch(BASE + '/media?path=' + encodeURIComponent('C:\\Windows\\win.ini'))
   check('media：白名单外路径被拒', escaped.status === 404, String(escaped.status))
+  // 下载：带 download=1 必须回 attachment，否则浏览器只会内联打开
+  const inlineRes = await fetch(BASE + '/media?path=' + encodeURIComponent(presetPath))
+  check('media：默认内联（无 Content-Disposition）', !inlineRes.headers.get('content-disposition'), inlineRes.headers.get('content-disposition') ?? '')
+  const downloadRes = await fetch(BASE + '/media?path=' + encodeURIComponent(presetPath) + '&download=1')
+  const disposition = downloadRes.headers.get('content-disposition') ?? ''
+  check('media：download=1 回 attachment + 文件名', /^attachment;/.test(disposition) && /filename\*=UTF-8''clean-tech\.png/.test(disposition), disposition)
 
   // ---- 策划：只出自策划指引（没有策划 API 了）
   const guideRes = await post('/api/plan/guide', { listingText: '保温杯 500ml 12小时保温', mode: 'listing', listingImageCount: 7 })
