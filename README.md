@@ -133,7 +133,7 @@ apiz 只支持固定比例 × 1K/2K/4K，或一批离散宽高。插件会选"�
 **方式二（命令行）**：
 
 ```bash
-dsh plugin  --profile web   add  https://github.com/liangdabiao/dsh-amazon-image-studio 
+dsh plugin --profile web add https://github.com/liangdabiao/dsh-amazon-image-studio
 ```
 
 装好后侧栏会出现「亚马逊图片」入口，点进去先到**「设置」页填 apiz Key**（或勾选复用本机 `apiz auth login` 登录态），否则生图会被拒绝。
